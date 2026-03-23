@@ -1,0 +1,35 @@
+# Web Framework & Server
+fastapi[all]
+uvicorn
+python-multipart
+
+# Database & ORM
+sqlalchemy
+psycopg2-binary
+alembic
+
+# Security & Authentication
+passlib[bcrypt]
+python-jose[cryptography]
+
+# Settings & Middleware
+pydantic-settings
+slowapi
+
+# Forecasting & Data Science
+prophet>=1.1.0
+pandas>=2.0.0
+numpy>=1.24.0
+optuna>=4.0.0
+
+# External Data & AI
+requests>=2.31.0
+google-genai>=1.0.0
+python-dotenv>=1.0.0
+
+# Export & Reporting
+reportlab
+matplotlib>=3.7.0
+
+# Testing
+pytest>=8.0.0
