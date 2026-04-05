@@ -2,7 +2,6 @@
 Authentication-related Pydantic schemas.
 """
 
-from typing import Optional
 from uuid import UUID
 
 from app.schemas.base import CamelModel
@@ -14,7 +13,7 @@ class RegisterRequest(CamelModel):
     email: str
     password: str
     password_confirm: str
-    business_name: Optional[str] = None
+    name: str
 
 
 class LoginRequest(CamelModel):
@@ -43,7 +42,7 @@ class UserResponse(CamelModel):
 
     id: UUID
     email: str
-    business_name: Optional[str] = None
+    name: str
     default_forecast_period: int = 3
     default_confidence_level: str = "95"
     holiday_calendar: str = "PH"

@@ -22,7 +22,11 @@ class CsvUploadSession(Base):
     )
     filename = Column(String, nullable=False)
     raw_bytes = Column(LargeBinary, nullable=False)
-    stage = Column(String(20), nullable=False)  # uploaded | validated
+    status = Column(String(20), nullable=False, default="uploaded")  # uploaded | validated | confirmed | expired
     column_map = Column(JSONB, nullable=True)
+    columns_detected = Column(JSONB, nullable=True)
+    suggested_mapping = Column(JSONB, nullable=True)
+    confidence = Column(JSONB, nullable=True)
+    validation_result = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)

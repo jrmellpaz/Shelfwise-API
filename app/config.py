@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     DEFAULT_LONGITUDE: float = 120.9842
 
     # ── Application ───────────────────────────────────────────
-    APP_NAME: str = "ShelfWise Inventory Forecasting API"
+    APP_NAME: str = "Shelfwise Inventory Forecasting API"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]

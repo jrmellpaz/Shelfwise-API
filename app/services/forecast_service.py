@@ -26,6 +26,7 @@ from app.core.exceptions import (
     InsufficientDataException,
     NotFoundException,
 )
+from app.models.custom_holiday import CustomHoliday
 from app.models.forecast import Forecast
 from app.models.forecast_result import ForecastResult
 from app.models.product import Product
@@ -39,6 +40,30 @@ logging.getLogger("prophet").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 FORECAST_PROGRESS_TOTAL = 5
+
+
+def build_custom_holidays_df(db: Session, user_id) -> pd.DataFrame | None:
+    """Query user's custom holidays and return a Prophet-compatible DataFrame.
+
+    Prophet expects a DataFrame with columns: holiday, ds, lower_window, upper_window.
+    Returns None if the user has no custom holidays.
+    """
+    rows = (
+        db.query(CustomHoliday)
+        .filter(CustomHoliday.user_id == user_id)
+        .all()
+    )
+    if not rows:
+        return None
+    return pd.DataFrame([
+        {
+            "holiday": r.name,
+            "ds": pd.Timestamp(r.date),
+            "lower_window": 0,
+            "upper_window": 0,
+        }
+        for r in rows
+    ])
 
 
 def _persist_forecast_progress(
@@ -396,6 +421,7 @@ def _backtest_single_model(
     cv_config: dict,
     country: str | None = None,
     tuned_params: dict | None = None,
+    custom_holidays_df: pd.DataFrame | None = None,
 ) -> dict:
     """Run rolling backtests for a single candidate model."""
     from prophet import Prophet
@@ -429,6 +455,7 @@ def _backtest_single_model(
                 changepoint_prior_scale=cps, seasonality_prior_scale=sps,
                 seasonality_mode=s_mode, interval_width=0.95,
                 daily_seasonality=False, weekly_seasonality=True, yearly_seasonality=True,
+                holidays=custom_holidays_df,
             )
             model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
             for col in regressor_columns:
@@ -469,6 +496,7 @@ def backtest_and_select(
     cv_config: dict,
     country: str | None = None,
     tuned_params: dict | None = None,
+    custom_holidays_df: pd.DataFrame | None = None,
 ) -> tuple[dict, list[dict], dict]:
     """Backtest all candidates and return the best plus comparison rows."""
     fallback_order = [selection_metric, "mase", "mae", "rmse", "smape", "wape", "mape"]
@@ -479,6 +507,7 @@ def backtest_and_select(
                 model_name, df, aggregation, cv_config,
                 country=country,
                 tuned_params=tuned_params if model_name == "prophet" else None,
+                custom_holidays_df=custom_holidays_df,
             )
             results.append(metrics)
         except Exception as e:
@@ -528,6 +557,7 @@ def optuna_tune_prophet(
     cv_config: dict,
     country: str | None = None,
     n_trials: int = 30,
+    custom_holidays_df: pd.DataFrame | None = None,
 ) -> dict | None:
     """Use Optuna Bayesian optimization to find optimal Prophet hyperparameters.
 
@@ -569,6 +599,7 @@ def optuna_tune_prophet(
             metrics = _backtest_single_model(
                 "prophet", df, aggregation, cv_config,
                 country=country, tuned_params=params,
+                custom_holidays_df=custom_holidays_df,
             )
             mape = metrics.get("mape")
             if mape is None:
@@ -602,6 +633,7 @@ def train_prophet_model(
     horizon_days: int = 90,
     country: str | None = None,
     tuned_params: dict | None = None,
+    custom_holidays_df: pd.DataFrame | None = None,
 ) -> tuple:
     """Configure, train Prophet, and generate forecast."""
     from prophet import Prophet
@@ -625,6 +657,7 @@ def train_prophet_model(
         changepoint_prior_scale=cps, seasonality_prior_scale=sps,
         seasonality_mode=s_mode, interval_width=0.95,
         daily_seasonality=False, weekly_seasonality=True, yearly_seasonality=True,
+        holidays=custom_holidays_df,
     )
     model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
     for col in regressor_columns:
@@ -870,6 +903,9 @@ def run_forecast(
         if user and user.holiday_calendar:
             country = user.holiday_calendar
 
+        # Load user's custom holidays for Prophet
+        custom_holidays_df = build_custom_holidays_df(db, forecast_record.user_id)
+
         # Step 1: Preprocess
         _persist_forecast_progress(db, forecast_record, 1, "Preparing data")
         logger.info("Preprocessing data for forecast %s", forecast_id)
@@ -895,6 +931,7 @@ def run_forecast(
             tuned_params = optuna_tune_prophet(
                 processed, aggregation, cv_config,
                 country=country, n_trials=tune_trials,
+                custom_holidays_df=custom_holidays_df,
             )
             if tuned_params:
                 forecast_record.tuned_parameters = tuned_params
@@ -905,6 +942,7 @@ def run_forecast(
         best_metrics, comparison_rows, selection_details = backtest_and_select(
             processed, aggregation, candidates, sel_metric, cv_config,
             country=country, tuned_params=tuned_params,
+            custom_holidays_df=custom_holidays_df,
         )
         selected_model = best_metrics["model"]
         forecast_record.selected_model = selected_model
@@ -916,6 +954,7 @@ def run_forecast(
             model, forecast_df = train_prophet_model(
                 processed, horizon_days=horizon_days, country=country,
                 tuned_params=tuned_params,
+                custom_holidays_df=custom_holidays_df,
             )
         else:
             model, forecast_df = build_baseline_forecast_frame(

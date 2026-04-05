@@ -184,6 +184,133 @@ def dataframe_from_column_mapping(raw_bytes: bytes, column_map: dict) -> pd.Data
     return df
 
 
+# ── Step 1b: Semantic Column Validation ───────────────────────
+
+
+def validate_column_semantics(raw_bytes: bytes, column_map: dict) -> list[str]:
+    """Check that mapped columns contain data matching their expected types.
+
+    Runs BEFORE column renaming to catch obviously wrong mappings early.
+    Raises ValidationException for clearly invalid mappings.
+    Returns a list of warning strings for borderline cases.
+    """
+    df = pd.read_csv(io.BytesIO(raw_bytes))
+    semantic_warnings: list[str] = []
+    fatal_issues: list[dict] = []
+    total_rows = len(df)
+
+    if total_rows == 0:
+        raise ValidationException("CSV file contains no data rows")
+
+    # ── Date field: must be parseable as real dates ──────────
+    date_csv_col = column_map.get("date")
+    if date_csv_col and date_csv_col in df.columns:
+        raw = df[date_csv_col].dropna()
+        if len(raw) > 0:
+            parsed = pd.to_datetime(raw, errors="coerce")
+            parseable_count = int(parsed.notna().sum())
+            parse_rate = parseable_count / len(raw)
+
+            if parse_rate < 0.5:
+                # Majority of values are not recognisable as dates
+                sample = [str(v) for v in raw.head(5).tolist()]
+                fatal_issues.append({
+                    "field": "date",
+                    "mappedColumn": date_csv_col,
+                    "issue": (
+                        f"Only {parse_rate:.0%} of values in '{date_csv_col}' "
+                        f"are recognizable as dates. "
+                        f"This column likely does not contain date values."
+                    ),
+                    "sampleValues": sample,
+                    "parseableCount": parseable_count,
+                    "totalCount": len(raw),
+                })
+            else:
+                # Dates parsed — check range is reasonable (catch epoch
+                # timestamps from numeric columns, e.g. pd.to_datetime(42)
+                # → 1970-01-01)
+                valid_dates = parsed.dropna()
+                if len(valid_dates) > 0:
+                    min_date = valid_dates.min()
+                    max_date = valid_dates.max()
+                    if min_date < pd.Timestamp("1990-01-01"):
+                        fatal_issues.append({
+                            "field": "date",
+                            "mappedColumn": date_csv_col,
+                            "issue": (
+                                f"Earliest parsed date from '{date_csv_col}' is "
+                                f"{min_date.strftime('%Y-%m-%d')}, which is before 1990. "
+                                f"This column may contain numeric values that were "
+                                f"misinterpreted as dates."
+                            ),
+                            "sampleValues": [str(v) for v in raw.head(5).tolist()],
+                            "parsedDateRange": (
+                                f"{min_date.strftime('%Y-%m-%d')} to "
+                                f"{max_date.strftime('%Y-%m-%d')}"
+                            ),
+                        })
+
+                # Warn if a notable chunk of dates didn't parse
+                if 0.5 <= parse_rate < 0.9:
+                    unparseable_pct = (1 - parse_rate) * 100
+                    semantic_warnings.append(
+                        f"{unparseable_pct:.0f}% of values in '{date_csv_col}' "
+                        f"are not parseable as dates — those rows will be dropped"
+                    )
+
+    # ── Quantity field: must be numeric ──────────────────────
+    qty_csv_col = column_map.get("quantity_sold")
+    if qty_csv_col and qty_csv_col in df.columns:
+        raw = df[qty_csv_col].dropna()
+        if len(raw) > 0:
+            numeric = pd.to_numeric(raw, errors="coerce")
+            numeric_count = int(numeric.notna().sum())
+            numeric_rate = numeric_count / len(raw)
+
+            if numeric_rate < 0.5:
+                sample = [str(v) for v in raw.head(5).tolist()]
+                fatal_issues.append({
+                    "field": "quantity_sold",
+                    "mappedColumn": qty_csv_col,
+                    "issue": (
+                        f"Only {numeric_rate:.0%} of values in '{qty_csv_col}' "
+                        f"are numeric. This column likely does not contain "
+                        f"quantity or sales data."
+                    ),
+                    "sampleValues": sample,
+                    "numericCount": numeric_count,
+                    "totalCount": len(raw),
+                })
+            elif numeric_rate < 0.9:
+                non_numeric_pct = (1 - numeric_rate) * 100
+                semantic_warnings.append(
+                    f"{non_numeric_pct:.0f}% of values in '{qty_csv_col}' "
+                    f"are not numeric — those will be set to 0"
+                )
+
+    # ── Product ID: warn if suspiciously high uniqueness ─────
+    pid_csv_col = column_map.get("product_id")
+    if pid_csv_col and pid_csv_col in df.columns and total_rows > 20:
+        n_unique = df[pid_csv_col].nunique()
+        uniqueness = n_unique / total_rows
+        if uniqueness > 0.9:
+            semantic_warnings.append(
+                f"'{pid_csv_col}' has {n_unique} unique values across "
+                f"{total_rows} rows ({uniqueness:.0%} unique) — "
+                f"this may not be a product identifier column"
+            )
+
+    if fatal_issues:
+        raise ValidationException(
+            "Column mapping appears incorrect — the mapped columns do not "
+            "contain the expected data types.",
+            details=fatal_issues,
+        )
+
+    return semantic_warnings
+
+
 # ── Step 2: Validate Structure ────────────────────────────────
 
 
@@ -246,22 +373,17 @@ def validate_structure(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     n_coerced = df["quantity_sold"].isna().sum()
     if n_coerced > 0:
         warnings_list.append(
-            f"{n_coerced} non-numeric values in quantity_sold → set to 0"
+            f"{n_coerced} non-numeric values in quantity_sold → rows dropped"
         )
-        df["quantity_sold"] = df["quantity_sold"].fillna(0)
+        df = df.dropna(subset=["quantity_sold"])
 
-    # Handle negatives
-    negatives = (df["quantity_sold"] < 0).sum()
-    if negatives > 0:
+    # Drop rows with quantity_sold <= 0 (DB constraint requires > 0)
+    non_positive = (df["quantity_sold"] <= 0).sum()
+    if non_positive > 0:
         warnings_list.append(
-            f"{negatives} negative values in quantity_sold → clamped to 0"
+            f"{non_positive} non-positive values in quantity_sold → rows dropped"
         )
-        df["quantity_sold"] = df["quantity_sold"].clip(lower=0)
-
-    # Final null check
-    remaining_nulls = df["quantity_sold"].isna().sum()
-    if remaining_nulls > 0:
-        df["quantity_sold"] = df["quantity_sold"].fillna(0)
+        df = df[df["quantity_sold"] > 0]
 
     df = df.reset_index(drop=True)
     logger.info("Validation complete: %d clean rows", len(df))

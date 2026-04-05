@@ -1,8 +1,14 @@
 """
-ShelfWise Inventory Forecasting API — Application Entry Point.
+Shelfwise Inventory Forecasting API — Application Entry Point.
 
 Ties together middleware, routers, error handlers, and CORS.
 """
+
+import warnings
+
+# Suppress harmless Pydantic warnings on Python 3.14 where alias_generator
+# produces aliases identical to the field name (e.g. single-word fields).
+warnings.filterwarnings("ignore", category=UserWarning, module=r"pydantic\._internal")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

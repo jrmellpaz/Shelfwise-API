@@ -115,7 +115,7 @@ def main():
         "email": TEST_EMAIL,
         "password": TEST_PASSWORD,
         "passwordConfirm": TEST_PASSWORD,
-        "businessName": "Test Store",
+        "name": "Test Store",
     }))
     if ok:
         state["access_token"] = body["data"]["accessToken"]
@@ -525,7 +525,7 @@ def main():
     print("\n27. Profile: Update")
     ok, body = test("PATCH /profile/", requests.patch(
         f"{BASE}/profile/",
-        json={"businessName": "Updated Store", "defaultForecastPeriod": 6},
+        json={"name": "Updated Store", "defaultForecastPeriod": 6},
         headers=auth_header(),
     ))
 

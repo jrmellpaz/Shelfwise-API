@@ -46,6 +46,13 @@ class NotFoundException(AppException):
         )
 
 
+class SessionExpiredException(AppException):
+    def __init__(self, message: str = "Upload session has expired. Please upload your CSV again."):
+        super().__init__(
+            code="SESSION_EXPIRED", message=message, status_code=410
+        )
+
+
 class FileTooLargeException(AppException):
     def __init__(self, max_size_mb: int = 10):
         super().__init__(

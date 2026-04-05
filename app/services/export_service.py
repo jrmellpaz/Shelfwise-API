@@ -157,7 +157,7 @@ def generate_pdf_report(forecast, product, user, results, historical_data=None) 
     product_label = f"{product.name} ({product.product_id})" if product else "Unknown Product"
     elements.append(Paragraph(product_label, subtitle_style))
 
-    business = user.business_name if user and user.business_name else ""
+    business = user.name if user and user.name else ""
     if business:
         elements.append(Paragraph(business, subtitle_style))
 

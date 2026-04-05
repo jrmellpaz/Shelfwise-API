@@ -1,0 +1,182 @@
+============================================================
+ShelfWise API -- End-to-End Test Suite
+Test email: test_d86a4225@shelfwise.com
+============================================================
+
+1. Health Check
+  PASS GET /health -- HTTP 200
+     DB status: connected
+
+2. Auth: Register
+  PASS POST /auth/register -- HTTP 200 -- Account created successfully
+
+3. Auth: Login
+  PASS POST /auth/login -- HTTP 200
+
+4. Auth: Login with wrong password (expect 401)
+  PASS POST /auth/login (bad password) -- HTTP 401
+
+5. Auth: Me
+  PASS GET /auth/me -- HTTP 200
+     User ID: a7c3b2c8-f10a-4d63-bdb5-83d33f6f0768
+
+6. Auth: Refresh
+  PASS POST /auth/refresh -- HTTP 200
+
+7. Upload: Step 1 -- Detect Columns
+  PASS POST /upload/ -- HTTP 200 -- CSV uploaded — 4 columns detected
+     uploadSessionId: 83fae8b3...
+     Columns detected: ['sale_date', 'product_id', 'total_items_sold', 'total_revenue']
+     Row count: 19965
+     Suggested mappings:
+       product_id -> product_id (confidence: exact)
+       date -> sale_date (confidence: high)
+       product_name -> None (confidence: None)
+       quantity_sold -> total_items_sold (confidence: high)
+     Unmapped columns: ['total_revenue']
+
+7b. Upload: Validate with bogus uploadSessionId (expect 404)
+  PASS POST /upload/validate (bad session) -- HTTP 404
+
+8. Upload: Step 2 -- Validate with Column Map
+  PASS POST /upload/validate -- HTTP 200 -- CSV validated — 19965 rows across 21 products
+     Products found: 21
+       #1: 1082 rows (add)
+       #15: 1082 rows (add)
+       #16: 1082 rows (add)
+       ... and 18 more
+     Data health: 90/100 (Excellent)
+     Warnings: ["Extra columns ignored: ['total_revenue']"]
+
+9. Upload: Step 3 -- Confirm
+  PASS POST /upload/confirm -- HTTP 200 -- Upload committed — 19965 rows inserted
+     Products created: 21
+     Rows inserted: 19965
+
+10. Products: List
+  PASS GET /products/ -- HTTP 200
+     First product: 1 (id=12ba186b...)
+     Total products: 21
+
+11. Products: Get Detail
+  PASS GET /products/{id} -- HTTP 200
+
+11b. Products: Get non-existent (expect 404)
+  PASS GET /products/{bogus} (404) -- HTTP 404
+
+12. Products: Update
+  PASS PATCH /products/{id} -- HTTP 200 -- Product updated
+
+13. Products: Archive
+  PASS PATCH /products/{id}/archive -- HTTP 200 -- Product archived
+     isArchived: True
+
+13b. Products: Unarchive
+  PASS PATCH /products/{id}/archive (unarchive) -- HTTP 200 -- Product unarchived
+     isArchived: False
+
+14. Forecast: Generate
+  PASS POST /forecasts/ -- HTTP 200 -- Forecast generation started
+     Forecast ID: 01c1446c...
+     Status: processing
+
+15. Forecast: Poll for Completion
+     ... status: processing (attempt 1)     ... status: processing (attempt 2)     ... status: processing (attempt 3)     ... status: processing (attempt 4)     ... status: generating_explanation (attempt 5)     ... status: generating_explanation (attempt 6)     Final status: completed (after 7 polls)
+     Model: prophet, MAPE: 24.76
+  PASS GET /forecasts/{id} -- HTTP 200
+
+15b. Forecast: Get non-existent (expect 404)
+  PASS GET /forecasts/{bogus} (404) -- HTTP 404
+
+16. Forecast: Results
+  PASS GET /forecasts/{id}/results -- HTTP 200
+     Data points: 30
+     First: 2026-03-12 -> 770.26
+     Last:  2026-04-10 -> 1101.18
+
+17. Forecast: Components
+  PASS GET /forecasts/{id}/components -- HTTP 200
+     Trend points: 30
+     Weekly effects: 7
+     Yearly effects: 2
+
+18. Forecast: List
+  PASS GET /forecasts/ -- HTTP 200
+     Total forecasts: 1
+
+19. Export: CSV
+  PASS GET /forecasts/{id}/export/csv -- 1070 bytes
+
+20. Export: Chart
+  PASS GET /forecasts/{id}/export/chart -- 203858 bytes
+
+21. Export: PDF
+  FAIL GET /forecasts/{id}/export/pdf -- HTTP 500
+
+22. Share: Create
+  PASS POST /forecasts/{id}/share -- HTTP 200 -- Share link created
+     Share token: CPKnLcu0e6wkezEqnkuFVQ
+     Expires: 2026-04-01T12:16:33.458382+08:00
+
+23. Shared: View Public (no auth)
+  PASS GET /shared/forecasts/{token} -- HTTP 200
+     Forecast status: completed
+     Results count: 30
+
+24. Share: Revoke
+  PASS DELETE /forecasts/{id}/share -- HTTP 200 -- Share link revoked
+
+24b. Shared: Revoked link (expect 404)
+  PASS GET /shared/forecasts/{token} (revoked) -- HTTP 404
+
+24c. Chatbot: Send a message
+  PASS POST /forecasts/{id}/chat -- HTTP 200 -- Chat response generated
+     Reply: For the next 30 days, we are projecting a total of 27,461 units sold, which averages out to about 91...
+
+24d. Chatbot: Follow-up with history
+  PASS POST /forecasts/{id}/chat (follow-up) -- HTTP 200 -- Chat response generated
+     Reply: There are two main things to keep an eye on regarding your current forecast:
+
+* A downward trend: Yo...
+
+24e. Chatbot: Non-existent forecast (expect 404)
+  PASS POST /forecasts/{bogus}/chat (404) -- HTTP 404
+
+25. Dashboard
+  PASS GET /dashboard/ -- HTTP 200
+     Products: 21, Forecasts: 1
+     Avg MAPE: 24.76
+
+26. Profile: Get
+  PASS GET /profile/ -- HTTP 200
+
+27. Profile: Update
+  PASS PATCH /profile/ -- HTTP 200 -- Profile updated successfully
+
+28. Profile: Change Password
+  PASS PUT /profile/password -- HTTP 200 -- Password changed successfully
+
+28b. Auth: Re-login with new password
+  PASS POST /auth/login (new password) -- HTTP 200
+     Token refreshed with new password
+
+29. Profile: Get Holidays
+  PASS GET /profile/holidays -- HTTP 200
+     Current calendar: PH
+
+30. Profile: Update Holidays
+  PASS PUT /profile/holidays -- HTTP 200 -- Holiday calendar updated
+
+31. Upload: Download Template
+  FAIL GET /upload/template -- HTTP 422
+
+32. Auth: Logout
+  PASS POST /auth/logout -- HTTP 200 -- Logged out successfully
+
+============================================================
+RESULTS: 39/41 passed, 2/41 failed
+
+Failed tests:
+  FAIL Export PDF: HTTP 500
+  FAIL Download Template: HTTP 422
+============================================================

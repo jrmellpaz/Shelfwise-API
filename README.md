@@ -1,6 +1,6 @@
-# ShelfWise Inventory Forecasting API
+# Shelfwise Inventory Forecasting API
 
-A FastAPI-powered backend for the **ShelfWise** AI-driven inventory forecasting system. It enables businesses to upload historical sales data (CSV), run multi-model demand forecasting pipelines, and receive AI-generated explanations of the results — all through a RESTful API with JWT authentication.
+A FastAPI-powered backend for the **Shelfwise** AI-driven inventory forecasting system. It enables businesses to upload historical sales data (CSV), run multi-model demand forecasting pipelines, and receive AI-generated explanations of the results — all through a RESTful API with JWT authentication.
 
 ---
 
@@ -25,7 +25,7 @@ A FastAPI-powered backend for the **ShelfWise** AI-driven inventory forecasting 
 
 ## Overview
 
-ShelfWise provides small-to-medium businesses with an automated demand forecasting solution. Users upload their historical sales CSVs, and the backend:
+Shelfwise provides small-to-medium businesses with an automated demand forecasting solution. Users upload their historical sales CSVs, and the backend:
 
 1. **Validates & profiles** the uploaded data
 2. **Classifies demand** using the ADI/CV² framework (smooth, erratic, intermittent, lumpy)
@@ -87,9 +87,10 @@ shelfwise-api/
     │       ├── auth.py         # POST /register, /login, /refresh, /logout; GET /me
     │       ├── upload.py       # POST /upload/, /validate, /confirm; GET /upload/template
     │       ├── forecasts.py    # POST /forecasts; GET /forecasts, /{id}, /{id}/results, /{id}/components, exports
+    │       ├── chatbot.py      # POST /forecasts/{id}/chat (Shelfwise Advisor AI chatbot)
     │       ├── products.py     # GET, PATCH /products; PATCH /products/{id}/archive
     │       ├── dashboard.py    # GET /dashboard (quick stats + recent forecasts)
-    │       ├── profile.py      # GET/PATCH /profile; PUT /profile/password; GET/PUT /profile/holidays
+    │       ├── profile.py      # GET/PATCH /profile; PUT /profile/password; GET/PUT /profile/holidays; holidays/builtin; holidays/custom CRUD
     │       ├── shared.py       # GET /shared/forecasts/{token} (public, no auth)
     │       └── health.py       # GET /health (system health check)
     │
@@ -109,7 +110,8 @@ shelfwise-api/
     │   ├── forecast.py         # Forecasts table (metadata + metrics)
     │   ├── forecast_result.py  # Forecast result data points table
     │   ├── activity_log.py     # Activity logs table (user action audit trail)
-    │   └── csv_upload_session.py  # Pending CSV upload sessions (BYTEA + column_map)
+    │   ├── csv_upload_session.py  # Pending CSV upload sessions (BYTEA + column_map)
+    │   └── custom_holiday.py   # User-defined custom holidays
     │
     ├── schemas/                # Pydantic request/response schemas
     │   ├── auth.py             # RegisterRequest, LoginRequest, TokenResponse, UserResponse
@@ -122,6 +124,7 @@ shelfwise-api/
         ├── upload_session_service.py  # Persisted csv_upload_sessions (multi-worker safe)
         ├── forecast_service.py # Core forecasting pipeline (preprocessing → tuning → model selection → training)
         ├── gemini_service.py   # Google Gemini API integration for AI explanations
+        ├── chatbot_service.py  # Shelfwise Advisor — conversational AI for forecast Q&A
         ├── export_service.py   # Forecast export generation (CSV, chart PNG, PDF report)
         └── activity_logger.py  # Non-blocking background task logger for user actions
 ```
@@ -136,7 +139,7 @@ shelfwise-api/
 | `id` | UUID (PK) | Auto-generated |
 | `email` | String | Unique, lowercase |
 | `password_hash` | String | bcrypt hash |
-| `business_name` | String | |
+| `name` | String | ✔ |
 | `contact_email` | String | Optional |
 | `mobile_number` | String | Optional |
 | `business_logo` | String | Optional URL/path |
@@ -225,6 +228,18 @@ shelfwise-api/
 | `weekly_seasonality` | Float | Prophet weekly component |
 | `yearly_seasonality` | Float | Prophet yearly component |
 
+### `custom_holidays`
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | Auto-generated |
+| `user_id` | UUID (FK → users) | CASCADE delete |
+| `name` | String | Holiday name (e.g., "Company Anniversary") |
+| `date` | Date | The holiday date |
+| `created_at` | Timestamp | Server default |
+| `updated_at` | Timestamp | Auto-updated |
+
+> Unique constraint on `(user_id, date)` — one custom holiday per date per user.
+
 ---
 
 ## API Reference
@@ -273,6 +288,7 @@ All endpoints are prefixed with `/api/v1`. Interactive docs are available at `/d
 | `GET` | `/forecasts/{id}/export/csv` | Yes | Download forecast results as CSV |
 | `GET` | `/forecasts/{id}/export/chart` | Yes | Download forecast chart as PNG image |
 | `GET` | `/forecasts/{id}/export/pdf` | Yes | Download full forecast report as PDF |
+| `POST` | `/forecasts/{id}/chat` | Yes | Send a message to Shelfwise Advisor (AI chatbot) about a forecast |
 | `POST` | `/forecasts/{id}/share` | Yes | Generate a shareable link (optional: `expiresInHours`) |
 | `DELETE` | `/forecasts/{id}/share` | Yes | Revoke a shareable link |
 
@@ -297,6 +313,11 @@ All endpoints are prefixed with `/api/v1`. Interactive docs are available at `/d
 | `PUT` | `/profile/password` | Yes | Change password (requires current password) |
 | `GET` | `/profile/holidays` | Yes | Get holiday calendar setting and list of supported country codes |
 | `PUT` | `/profile/holidays` | Yes | Update holiday calendar country code |
+| `GET` | `/profile/holidays/builtin` | Yes | List built-in holidays for the user's country calendar (query: `?year=2026`) |
+| `GET` | `/profile/holidays/custom` | Yes | List user's custom holidays (query: `?year=2026`) |
+| `POST` | `/profile/holidays/custom` | Yes | Create a custom holiday (`name`, `date`) |
+| `PUT` | `/profile/holidays/custom/{id}` | Yes | Update a custom holiday's name or date |
+| `DELETE` | `/profile/holidays/custom/{id}` | Yes | Delete a custom holiday |
 
 ### System — `/api/v1/health`
 
@@ -392,7 +413,7 @@ GEMINI_API_KEY=your_gemini_api_key_here
 | `MAX_UPLOAD_SIZE_MB` | `10` | Maximum CSV upload size |
 | `MAX_UPLOAD_ROWS` | `50000` | Maximum rows per CSV upload |
 | `UPLOAD_SESSION_TTL_HOURS` | `24` | Time-to-live for pending CSV upload sessions |
-| `APP_NAME` | `ShelfWise Inventory Forecasting API` | Application name shown in docs |
+| `APP_NAME` | `Shelfwise Inventory Forecasting API` | Application name shown in docs |
 | `DEBUG` | `false` | Enable debug logging |
 | `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins |
 

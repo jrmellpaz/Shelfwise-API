@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.exceptions import NotFoundException, ValidationException
+from app.core.exceptions import NotFoundException, SessionExpiredException
 from app.models.csv_upload_session import CsvUploadSession
 
 
@@ -24,7 +24,15 @@ def delete_expired_sessions(db: Session) -> None:
     db.commit()
 
 
-def create_session(db: Session, user_id, filename: str, raw_bytes: bytes) -> CsvUploadSession:
+def create_session(
+    db: Session,
+    user_id,
+    filename: str,
+    raw_bytes: bytes,
+    columns_detected: list | None = None,
+    suggested_mapping: dict | None = None,
+    confidence: dict | None = None,
+) -> CsvUploadSession:
     """Create a new upload session; prune expired rows globally."""
     delete_expired_sessions(db)
     expires_at = _now() + timedelta(hours=settings.UPLOAD_SESSION_TTL_HOURS)
@@ -32,8 +40,11 @@ def create_session(db: Session, user_id, filename: str, raw_bytes: bytes) -> Csv
         user_id=user_id,
         filename=filename or "upload.csv",
         raw_bytes=raw_bytes,
-        stage="uploaded",
+        status="uploaded",
         column_map=None,
+        columns_detected=columns_detected,
+        suggested_mapping=suggested_mapping,
+        confidence=confidence,
         expires_at=expires_at,
     )
     db.add(row)
@@ -44,9 +55,7 @@ def create_session(db: Session, user_id, filename: str, raw_bytes: bytes) -> Csv
 
 def assert_not_expired(row: CsvUploadSession) -> None:
     if row.expires_at < _now():
-        raise ValidationException(
-            "Upload session has expired. Please upload your CSV again."
-        )
+        raise SessionExpiredException()
 
 
 def get_session_for_user(db: Session, session_id: UUID, user_id) -> CsvUploadSession:
@@ -61,9 +70,23 @@ def get_session_for_user(db: Session, session_id: UUID, user_id) -> CsvUploadSes
     return row
 
 
-def mark_validated(db: Session, row: CsvUploadSession, column_map: dict) -> None:
+def mark_validated(
+    db: Session,
+    row: CsvUploadSession,
+    column_map: dict,
+    validation_result: dict | None = None,
+) -> None:
     row.column_map = column_map
-    row.stage = "validated"
+    row.status = "validated"
+    if validation_result is not None:
+        row.validation_result = validation_result
+    db.commit()
+    db.refresh(row)
+
+
+def mark_confirmed(db: Session, row: CsvUploadSession) -> None:
+    """Mark session as confirmed (data imported)."""
+    row.status = "confirmed"
     db.commit()
     db.refresh(row)
 
