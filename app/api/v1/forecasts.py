@@ -9,6 +9,7 @@ GET  /{id}/components    — Get component breakdown
 GET  /{id}/export/csv    — Download forecast results as CSV
 GET  /{id}/export/chart  — Download forecast chart as PNG
 GET  /{id}/export/pdf    — Download forecast report as PDF
+GET  /{id}/share         — Check if a forecast is currently shared
 POST /{id}/share         — Generate a shareable link
 DELETE /{id}/share       — Revoke a shareable link
 """
@@ -411,6 +412,41 @@ async def export_forecast_pdf(
 
 
 # ── Sharing ───────────────────────────────────────────────────
+
+
+@router.get("/{forecast_uuid}/share")
+async def get_share_status(
+    forecast_uuid: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Check whether a forecast is currently shared.
+
+    Returns the share status, token, and expiry so the frontend
+    can conditionally render the Revoke button.
+    """
+    forecast = (
+        db.query(Forecast)
+        .filter(Forecast.id == forecast_uuid, Forecast.user_id == current_user.id)
+        .first()
+    )
+    if not forecast:
+        raise NotFoundException("Forecast")
+
+    # A forecast is considered shared if it has a token AND hasn't expired
+    is_shared = bool(forecast.share_token)
+    if is_shared and forecast.share_expires_at:
+        is_shared = forecast.share_expires_at.replace(tzinfo=None) > datetime.utcnow()
+
+    return success_response(data={
+        "isShared": is_shared,
+        "shareToken": forecast.share_token if is_shared else None,
+        "expiresAt": (
+            forecast.share_expires_at.isoformat()
+            if is_shared and forecast.share_expires_at
+            else None
+        ),
+    })
 
 
 @router.post("/{forecast_uuid}/share")
