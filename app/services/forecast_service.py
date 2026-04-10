@@ -48,22 +48,20 @@ def build_custom_holidays_df(db: Session, user_id) -> pd.DataFrame | None:
     Prophet expects a DataFrame with columns: holiday, ds, lower_window, upper_window.
     Returns None if the user has no custom holidays.
     """
-    rows = (
-        db.query(CustomHoliday)
-        .filter(CustomHoliday.user_id == user_id)
-        .all()
-    )
+    rows = db.query(CustomHoliday).filter(CustomHoliday.user_id == user_id).all()
     if not rows:
         return None
-    return pd.DataFrame([
-        {
-            "holiday": r.name,
-            "ds": pd.Timestamp(r.date),
-            "lower_window": 0,
-            "upper_window": 0,
-        }
-        for r in rows
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "holiday": r.name,
+                "ds": pd.Timestamp(r.date),
+                "lower_window": 0,
+                "upper_window": 0,
+            }
+            for r in rows
+        ]
+    )
 
 
 def _persist_forecast_progress(
@@ -153,7 +151,12 @@ def preprocess_for_prophet(
                 pdf.loc[positive_mask, "y"] = pdf.loc[positive_mask, "y"].clip(
                     lower=lower_bound, upper=upper_bound
                 )
-                logger.info("Capped %d outliers (IQR: %.0f–%.0f)", total_outliers, lower_bound, upper_bound)
+                logger.info(
+                    "Capped %d outliers (IQR: %.0f–%.0f)",
+                    total_outliers,
+                    lower_bound,
+                    upper_bound,
+                )
             elif total_outliers > 0 and outlier_method == "remove":
                 pdf = pdf[
                     (~positive_mask)
@@ -200,7 +203,8 @@ def detect_demand_profile(df: pd.DataFrame) -> dict:
     if non_zero_periods == 0:
         return {
             "classification": "all_zero",
-            "adi": None, "cv2": None,
+            "adi": None,
+            "cv2": None,
             "zeroRatio": round(zero_ratio, 3),
             "nonZeroPeriods": non_zero_periods,
             "totalPeriods": total_periods,
@@ -243,7 +247,9 @@ def _summarize_demand_profile(dp: dict) -> str:
     if c == "all_zero":
         return "No non-zero sales found — treated as an all-zero series."
     if c == "smooth":
-        return f"Regular sales with stable order sizes (ADI={dp['adi']}, CV²={dp['cv2']})."
+        return (
+            f"Regular sales with stable order sizes (ADI={dp['adi']}, CV²={dp['cv2']})."
+        )
     if c == "erratic":
         return f"Frequent sales but volatile order sizes (ADI={dp['adi']}, CV²={dp['cv2']})."
     if c == "intermittent":
@@ -336,7 +342,8 @@ def compute_error_metrics(y_true, y_pred, insample_values) -> dict:
 
     mape = (
         float(np.mean(abs_error[non_zero_mask] / np.abs(y_true[non_zero_mask]))) * 100
-        if non_zero_mask.any() else None
+        if non_zero_mask.any()
+        else None
     )
 
     smape_terms = np.zeros_like(abs_error, dtype=float)
@@ -346,9 +353,13 @@ def compute_error_metrics(y_true, y_pred, insample_values) -> dict:
 
     result = {
         "mape": round(mape, 2) if mape is not None else None,
-        "wape": round(float(abs_error.sum() / wape_denom) * 100, 2) if wape_denom > 0 else None,
+        "wape": round(float(abs_error.sum() / wape_denom) * 100, 2)
+        if wape_denom > 0
+        else None,
         "smape": round(float(np.mean(smape_terms)) * 100, 2),
-        "mase": round(float(mean_abs_error / mase_denom), 3) if mase_denom > 0 else (0.0 if mean_abs_error == 0 else None),
+        "mase": round(float(mean_abs_error / mase_denom), 3)
+        if mase_denom > 0
+        else (0.0 if mean_abs_error == 0 else None),
         "rmse": round(float(np.sqrt(np.mean(squared_error))), 2),
         "mae": round(mean_abs_error, 2),
     }
@@ -390,7 +401,9 @@ def _build_baseline_forecast(
         if len(train_values) < season_length:
             return np.repeat(train_values[-1], horizon).astype(float)
         template = train_values[-season_length:]
-        return np.array([template[i % season_length] for i in range(horizon)], dtype=float)
+        return np.array(
+            [template[i % season_length] for i in range(horizon)], dtype=float
+        )
 
     if model_name == "croston_sba":
         positive_indices = np.where(train_values > 0)[0]
@@ -401,7 +414,7 @@ def _build_baseline_forecast(
         demand_est = train_values[first_idx]
         interval_est = 1.0
         interval = 1.0
-        for value in train_values[first_idx + 1:]:
+        for value in train_values[first_idx + 1 :]:
             if value > 0:
                 demand_est += alpha * (value - demand_est)
                 interval_est += alpha * (interval - interval_est)
@@ -446,15 +459,29 @@ def _backtest_single_model(
             std_sales = train_df["y"].std()
             cv_val = std_sales / avg_sales if avg_sales > 0 else 0
             s_mode = "multiplicative" if cv_val > 0.5 else "additive"
-            cps = tuned_params.get("changepoint_prior_scale", 0.1) if tuned_params else 0.1
-            sps = tuned_params.get("seasonality_prior_scale", 10.0) if tuned_params else 10.0
+            cps = (
+                tuned_params.get("changepoint_prior_scale", 0.1)
+                if tuned_params
+                else 0.1
+            )
+            sps = (
+                tuned_params.get("seasonality_prior_scale", 10.0)
+                if tuned_params
+                else 10.0
+            )
             mfo = tuned_params.get("monthly_fourier_order", 5) if tuned_params else 5
-            s_mode = tuned_params.get("seasonality_mode", s_mode) if tuned_params else s_mode
+            s_mode = (
+                tuned_params.get("seasonality_mode", s_mode) if tuned_params else s_mode
+            )
 
             model = Prophet(
-                changepoint_prior_scale=cps, seasonality_prior_scale=sps,
-                seasonality_mode=s_mode, interval_width=0.95,
-                daily_seasonality=False, weekly_seasonality=True, yearly_seasonality=True,
+                changepoint_prior_scale=cps,
+                seasonality_prior_scale=sps,
+                seasonality_mode=s_mode,
+                interval_width=0.95,
+                daily_seasonality=False,
+                weekly_seasonality=True,
+                yearly_seasonality=True,
                 holidays=custom_holidays_df,
             )
             model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
@@ -466,23 +493,34 @@ def _backtest_single_model(
             model.fit(train_df)
             future = model.make_future_dataframe(periods=len(test_df), freq="D")
             if regressor_columns:
-                known = pd.concat([
-                    train_df[["ds", *regressor_columns]],
-                    test_df[["ds", *regressor_columns]],
-                ]).drop_duplicates(subset=["ds"], keep="last")
+                known = pd.concat(
+                    [
+                        train_df[["ds", *regressor_columns]],
+                        test_df[["ds", *regressor_columns]],
+                    ]
+                ).drop_duplicates(subset=["ds"], keep="last")
                 future = future.merge(known, on="ds", how="left")
-                future[regressor_columns] = future[regressor_columns].ffill().bfill().fillna(0)
+                future[regressor_columns] = (
+                    future[regressor_columns].ffill().bfill().fillna(0)
+                )
             forecast = model.predict(future)
-            preds = forecast.tail(len(test_df))["yhat"].clip(lower=0).to_numpy(dtype=float)
+            preds = (
+                forecast.tail(len(test_df))["yhat"].clip(lower=0).to_numpy(dtype=float)
+            )
         else:
             preds = _build_baseline_forecast(
-                model_name, train_df["y"].to_numpy(dtype=float), len(test_df), season_length
+                model_name,
+                train_df["y"].to_numpy(dtype=float),
+                len(test_df),
+                season_length,
             )
 
         y_true_all.extend(test_df["y"].to_numpy(dtype=float))
         y_pred_all.extend(preds)
 
-    metrics = compute_error_metrics(y_true_all, y_pred_all, df["y"].to_numpy(dtype=float))
+    metrics = compute_error_metrics(
+        y_true_all, y_pred_all, df["y"].to_numpy(dtype=float)
+    )
     metrics["model"] = model_name
     metrics["folds"] = len(folds)
     return metrics
@@ -504,7 +542,10 @@ def backtest_and_select(
     for model_name in candidate_models:
         try:
             metrics = _backtest_single_model(
-                model_name, df, aggregation, cv_config,
+                model_name,
+                df,
+                aggregation,
+                cv_config,
                 country=country,
                 tuned_params=tuned_params if model_name == "prophet" else None,
                 custom_holidays_df=custom_holidays_df,
@@ -572,6 +613,7 @@ def optuna_tune_prophet(
     """
     try:
         import optuna
+
         optuna.logging.set_verbosity(optuna.logging.WARNING)
     except ImportError:
         logger.warning("Optuna not installed — skipping hyperparameter tuning")
@@ -590,15 +632,17 @@ def optuna_tune_prophet(
             "seasonality_mode": trial.suggest_categorical(
                 "seasonality_mode", ["additive", "multiplicative"]
             ),
-            "monthly_fourier_order": trial.suggest_int(
-                "monthly_fourier_order", 0, 5
-            ),
+            "monthly_fourier_order": trial.suggest_int("monthly_fourier_order", 0, 5),
         }
 
         try:
             metrics = _backtest_single_model(
-                "prophet", df, aggregation, cv_config,
-                country=country, tuned_params=params,
+                "prophet",
+                df,
+                aggregation,
+                cv_config,
+                country=country,
+                tuned_params=params,
                 custom_holidays_df=custom_holidays_df,
             )
             mape = metrics.get("mape")
@@ -617,13 +661,15 @@ def optuna_tune_prophet(
         best_value = study.best_value
         logger.info(
             "Optuna tuning complete — best MAPE: %.2f%%, params: %s",
-            best_value, best_params,
+            best_value,
+            best_params,
         )
         return best_params
 
     except Exception as e:
         logger.warning("Optuna tuning failed: %s", e)
         return None
+
 
 # ── Prophet Training ──────────────────────────────────────────
 
@@ -654,9 +700,13 @@ def train_prophet_model(
     regressor_columns = [c for c in df.columns if c not in {"ds", "y"}]
 
     model = Prophet(
-        changepoint_prior_scale=cps, seasonality_prior_scale=sps,
-        seasonality_mode=s_mode, interval_width=0.95,
-        daily_seasonality=False, weekly_seasonality=True, yearly_seasonality=True,
+        changepoint_prior_scale=cps,
+        seasonality_prior_scale=sps,
+        seasonality_mode=s_mode,
+        interval_width=0.95,
+        daily_seasonality=False,
+        weekly_seasonality=True,
+        yearly_seasonality=True,
         holidays=custom_holidays_df,
     )
     model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
@@ -687,19 +737,23 @@ def build_baseline_forecast_frame(
 ) -> tuple[dict, pd.DataFrame]:
     """Train a baseline model and produce future rows."""
     future_dates = pd.date_range(
-        start=df["ds"].max() + pd.Timedelta(days=1), periods=horizon_days, freq="D",
+        start=df["ds"].max() + pd.Timedelta(days=1),
+        periods=horizon_days,
+        freq="D",
     )
     season_length = _infer_season_length(aggregation)
     preds = _build_baseline_forecast(
         model_name, df["y"].to_numpy(dtype=float), horizon_days, season_length
     )
     residual_scale = float(df["y"].std()) if len(df) > 1 else 0.0
-    forecast = pd.DataFrame({
-        "ds": future_dates,
-        "yhat": preds,
-        "yhat_lower": np.maximum(0, preds - 1.96 * residual_scale),
-        "yhat_upper": preds + 1.96 * residual_scale,
-    })
+    forecast = pd.DataFrame(
+        {
+            "ds": future_dates,
+            "yhat": preds,
+            "yhat_lower": np.maximum(0, preds - 1.96 * residual_scale),
+            "yhat_upper": preds + 1.96 * residual_scale,
+        }
+    )
     return {"model_name": model_name}, forecast
 
 
@@ -725,13 +779,15 @@ def detect_trend_changes(model, forecast_df: pd.DataFrame) -> list[dict]:
             direction = "up" if delta_val > 0 else "down"
             closest_idx = (trend["ds"] - cp_date).abs().idxmin()
             trend_at_point = float(trend.loc[closest_idx, "trend"])
-            changes.append({
-                "date": cp_date.strftime("%Y-%m-%d"),
-                "direction": direction,
-                "magnitude": round(abs(delta_val), 2),
-                "trendAtChange": round(trend_at_point, 1),
-                "description": f"Trend {'increased' if direction == 'up' else 'decreased'} by {abs(delta_val):.1f} units/day",
-            })
+            changes.append(
+                {
+                    "date": cp_date.strftime("%Y-%m-%d"),
+                    "direction": direction,
+                    "magnitude": round(abs(delta_val), 2),
+                    "trendAtChange": round(trend_at_point, 1),
+                    "description": f"Trend {'increased' if direction == 'up' else 'decreased'} by {abs(delta_val):.1f} units/day",
+                }
+            )
         changes.sort(key=lambda x: x["magnitude"], reverse=True)
     except Exception as e:
         logger.warning("Could not extract trend changes: %s", e)
@@ -773,7 +829,10 @@ def format_frontend_data(
     trend_data = []
     if "trend" in forecast_df.columns:
         trend_data = [
-            {"date": row["ds"].strftime("%Y-%m-%d"), "value": round(float(row["trend"]), 1)}
+            {
+                "date": row["ds"].strftime("%Y-%m-%d"),
+                "value": round(float(row["trend"]), 1),
+            }
             for _, row in forecast_df.iterrows()
         ]
 
@@ -783,9 +842,19 @@ def format_frontend_data(
         fc = forecast_df.copy()
         fc["dow"] = fc["ds"].dt.day_name()
         weekly_avg = fc.groupby("dow")["weekly"].mean()
-        for day in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]:
+        for day in [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]:
             if day in weekly_avg.index:
-                weekly_data.append({"dayOfWeek": day, "effect": round(float(weekly_avg[day]), 2)})
+                weekly_data.append(
+                    {"dayOfWeek": day, "effect": round(float(weekly_avg[day]), 2)}
+                )
 
     # Yearly seasonality
     yearly_data: list[dict] = []
@@ -793,7 +862,12 @@ def format_frontend_data(
         fc = forecast_df.copy()
         yearly_avg = fc.groupby(fc["ds"].dt.month)["yearly"].mean()
         for month_num, effect in yearly_avg.items():
-            yearly_data.append({"month": calendar.month_name[month_num], "effect": round(float(effect), 2)})
+            yearly_data.append(
+                {
+                    "month": calendar.month_name[month_num],
+                    "effect": round(float(effect), 2),
+                }
+            )
 
     return {
         "productId": product_id,
@@ -801,7 +875,11 @@ def format_frontend_data(
         "generatedAt": datetime.now().isoformat(),
         "historical": historical,
         "forecast": forecast_data,
-        "components": {"trend": trend_data, "weekly": weekly_data, "yearly": yearly_data},
+        "components": {
+            "trend": trend_data,
+            "weekly": weekly_data,
+            "yearly": yearly_data,
+        },
         "metrics": metrics,
     }
 
@@ -810,16 +888,20 @@ def format_frontend_data(
 
 
 def fetch_weather_data(
-    start_date: str, end_date: str,
-    latitude: float | None = None, longitude: float | None = None,
+    start_date: str,
+    end_date: str,
+    latitude: float | None = None,
+    longitude: float | None = None,
 ) -> pd.DataFrame | None:
     """Fetch historical weather from Open-Meteo."""
     latitude = latitude if latitude is not None else settings.DEFAULT_LATITUDE
     longitude = longitude if longitude is not None else settings.DEFAULT_LONGITUDE
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
-        "latitude": latitude, "longitude": longitude,
-        "start_date": start_date, "end_date": end_date,
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": start_date,
+        "end_date": end_date,
         "daily": ["temperature_2m_mean", "precipitation_sum"],
         "timezone": "auto",
     }
@@ -827,11 +909,13 @@ def fetch_weather_data(
         response = http_requests.get(url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
-        weather_df = pd.DataFrame({
-            "ds": pd.to_datetime(data["daily"]["time"]),
-            "temperature": data["daily"]["temperature_2m_mean"],
-            "precipitation": data["daily"]["precipitation_sum"],
-        })
+        weather_df = pd.DataFrame(
+            {
+                "ds": pd.to_datetime(data["daily"]["time"]),
+                "temperature": data["daily"]["temperature_2m_mean"],
+                "precipitation": data["daily"]["precipitation_sum"],
+            }
+        )
         return weather_df.ffill().bfill()
     except Exception as e:
         logger.warning("Failed to fetch weather data: %s", e)
@@ -856,7 +940,9 @@ def run_forecast(
             logger.error("Forecast record %s not found", forecast_id)
             return
 
-        product = db.query(Product).filter(Product.id == forecast_record.product_id).first()
+        product = (
+            db.query(Product).filter(Product.id == forecast_record.product_id).first()
+        )
         if not product:
             _clear_forecast_progress(db, forecast_record)
             forecast_record.status = "failed"
@@ -878,10 +964,12 @@ def run_forecast(
             db.commit()
             return
 
-        df = pd.DataFrame([
-            {"date": r.date, "quantity_sold": float(r.quantity_sold)}
-            for r in sales_rows
-        ])
+        df = pd.DataFrame(
+            [
+                {"date": r.date, "quantity_sold": float(r.quantity_sold)}
+                for r in sales_rows
+            ]
+        )
 
         # Check minimum data length
         df["date"] = pd.to_datetime(df["date"])
@@ -899,6 +987,7 @@ def run_forecast(
 
         # Get user's holiday calendar
         from app.models.user import User
+
         user = db.query(User).filter(User.id == forecast_record.user_id).first()
         if user and user.holiday_calendar:
             country = user.holiday_calendar
@@ -929,8 +1018,11 @@ def run_forecast(
         if enable_tuning and "prophet" in candidates:
             logger.info("Running Optuna tuning for forecast %s", forecast_id)
             tuned_params = optuna_tune_prophet(
-                processed, aggregation, cv_config,
-                country=country, n_trials=tune_trials,
+                processed,
+                aggregation,
+                cv_config,
+                country=country,
+                n_trials=tune_trials,
                 custom_holidays_df=custom_holidays_df,
             )
             if tuned_params:
@@ -940,8 +1032,13 @@ def run_forecast(
         logger.info("Running backtests for forecast %s", forecast_id)
 
         best_metrics, comparison_rows, selection_details = backtest_and_select(
-            processed, aggregation, candidates, sel_metric, cv_config,
-            country=country, tuned_params=tuned_params,
+            processed,
+            aggregation,
+            candidates,
+            sel_metric,
+            cv_config,
+            country=country,
+            tuned_params=tuned_params,
             custom_holidays_df=custom_holidays_df,
         )
         selected_model = best_metrics["model"]
@@ -952,7 +1049,9 @@ def run_forecast(
         logger.info("Training %s for forecast %s", selected_model, forecast_id)
         if selected_model == "prophet":
             model, forecast_df = train_prophet_model(
-                processed, horizon_days=horizon_days, country=country,
+                processed,
+                horizon_days=horizon_days,
+                country=country,
                 tuned_params=tuned_params,
                 custom_holidays_df=custom_holidays_df,
             )
@@ -975,8 +1074,13 @@ def run_forecast(
         forecast_record.data_end_date = df["date"].max().date()
         forecast_record.data_row_count = len(df)
         forecast_record.seasonality_mode = (
-            "multiplicative" if (df["quantity_sold"].std() / df["quantity_sold"].mean() > 0.5
-                                if df["quantity_sold"].mean() > 0 else False) else "additive"
+            "multiplicative"
+            if (
+                df["quantity_sold"].std() / df["quantity_sold"].mean() > 0.5
+                if df["quantity_sold"].mean() > 0
+                else False
+            )
+            else "additive"
         )
         forecast_record.model_parameters = {
             **init_params,
@@ -999,18 +1103,26 @@ def run_forecast(
         future_rows = forecast_df[forecast_df["ds"] > last_historical]
         result_records = []
         for _, row in future_rows.iterrows():
-            result_records.append(ForecastResult(
-                forecast_id=forecast_record.id,
-                date=row["ds"].date(),
-                predicted_value=round(float(row["yhat"]), 2),
-                lower_bound_80=round(float(max(0, row.get("yhat_lower", 0))), 2),
-                upper_bound_80=round(float(row.get("yhat_upper", row["yhat"])), 2),
-                lower_bound_95=round(float(max(0, row.get("yhat_lower", 0))), 2),
-                upper_bound_95=round(float(row.get("yhat_upper", row["yhat"])), 2),
-                trend=round(float(row.get("trend", 0)), 2) if "trend" in row else None,
-                weekly_seasonality=round(float(row.get("weekly", 0)), 2) if "weekly" in row else None,
-                yearly_seasonality=round(float(row.get("yearly", 0)), 2) if "yearly" in row else None,
-            ))
+            result_records.append(
+                ForecastResult(
+                    forecast_id=forecast_record.id,
+                    date=row["ds"].date(),
+                    predicted_value=round(float(row["yhat"]), 2),
+                    lower_bound_80=round(float(max(0, row.get("yhat_lower", 0))), 2),
+                    upper_bound_80=round(float(row.get("yhat_upper", row["yhat"])), 2),
+                    lower_bound_95=round(float(max(0, row.get("yhat_lower", 0))), 2),
+                    upper_bound_95=round(float(row.get("yhat_upper", row["yhat"])), 2),
+                    trend=round(float(row.get("trend", 0)), 2)
+                    if "trend" in row
+                    else None,
+                    weekly_seasonality=round(float(row.get("weekly", 0)), 2)
+                    if "weekly" in row
+                    else None,
+                    yearly_seasonality=round(float(row.get("yearly", 0)), 2)
+                    if "yearly" in row
+                    else None,
+                )
+            )
         forecast_record.progress_step = 4
         forecast_record.progress_total = FORECAST_PROGRESS_TOTAL
         forecast_record.progress_label = "Saving forecast"
@@ -1025,12 +1137,14 @@ def run_forecast(
         db.commit()
 
         try:
-            from app.services.gemini_service import generate_gemini_explanation
-            explanation = generate_gemini_explanation(frontend_data)
+            explanation = generate_gemini_explanation(frontend_data, user=user)
             if explanation:
                 import json
+
                 forecast_record.ai_explanation = (
-                    json.dumps(explanation) if isinstance(explanation, dict) else explanation
+                    json.dumps(explanation)
+                    if isinstance(explanation, dict)
+                    else explanation
                 )
         except Exception as e:
             logger.warning("Gemini explanation failed: %s", e)
@@ -1044,7 +1158,9 @@ def run_forecast(
     except Exception as e:
         logger.error("Forecast %s failed: %s", forecast_id, e, exc_info=True)
         try:
-            forecast_record = db.query(Forecast).filter(Forecast.id == forecast_id).first()
+            forecast_record = (
+                db.query(Forecast).filter(Forecast.id == forecast_id).first()
+            )
             if forecast_record:
                 _clear_forecast_progress(db, forecast_record)
                 forecast_record.status = "failed"

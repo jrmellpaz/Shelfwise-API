@@ -21,13 +21,13 @@ class User(Base):
     contact_email = Column(String, nullable=True)
     mobile_number = Column(String, nullable=True)
     business_logo = Column(Text, nullable=True)
-    default_forecast_period = Column(Integer, default=3)       # months (1–12)
-    default_confidence_level = Column(String, default="95")     # '80', '95', or 'both'
-    holiday_calendar = Column(String, default="PH")             # country code
+    default_forecast_period = Column(Integer, default=3)  # months (1–12)
+    default_confidence_level = Column(String, default="95")  # '80', '95', or 'both'
+    holiday_calendar = Column(String, default="PH")  # country code
+    gemini_api_key = Column(Text, nullable=True)  # Fernet-encrypted
+    gemini_api_key_added_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), onupdate=func.now(), nullable=True
-    )
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
     # Relationships
     products = relationship(

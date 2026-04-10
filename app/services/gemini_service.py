@@ -12,19 +12,22 @@ import re
 
 from app.config import settings
 
-
 logger = logging.getLogger(__name__)
 
 
-def generate_gemini_explanation(frontend_data: dict) -> dict | None:
+def generate_gemini_explanation(frontend_data: dict, user=None) -> dict | None:
     """Send forecast context to Gemini and get a structured explanation.
 
     Returns a dict with keys: overview, patterns, reliability,
     recommendations, risks, nextSteps.  Returns None on failure.
-    """
-    from app.services.gemini_client import get_gemini_client
 
-    client = get_gemini_client()
+    Args:
+        frontend_data: Forecast context data for the prompt.
+        user: Optional User ORM object — uses their custom API key if set.
+    """
+    from app.services.gemini_client import get_gemini_client_for_user
+
+    client = get_gemini_client_for_user(user)
     if client is None:
         return None
 
@@ -51,12 +54,15 @@ def generate_gemini_explanation(frontend_data: dict) -> dict | None:
     total_upper_bound = sum(upper_bounds)
     growth_pct = (
         ((avg_forecast - avg_historical) / avg_historical * 100)
-        if avg_historical > 0 else 0
+        if avg_historical > 0
+        else 0
     )
 
     # Confidence band
     mape_val = metrics.get("mape", 0) or 0
-    confidence_units = round(avg_historical * (mape_val / 100), 1) if avg_historical > 0 else 0
+    confidence_units = (
+        round(avg_historical * (mape_val / 100), 1) if avg_historical > 0 else 0
+    )
     confidence_band_text = (
         f"On a typical day selling ~{avg_historical:.0f} units, "
         f"this forecast could be off by about ±{confidence_units} units."
@@ -88,10 +94,13 @@ def generate_gemini_explanation(frontend_data: dict) -> dict | None:
 
     # Trend changes
     trend_changes = frontend_data.get("trendChanges", [])
-    trend_changes_text = "\n".join(
-        f"- {tc['date']}: Trend {tc['direction']} by {tc['magnitude']} units/day"
-        for tc in trend_changes
-    ) or "- No major trend shifts detected"
+    trend_changes_text = (
+        "\n".join(
+            f"- {tc['date']}: Trend {tc['direction']} by {tc['magnitude']} units/day"
+            for tc in trend_changes
+        )
+        or "- No major trend shifts detected"
+    )
 
     # ── Construct the prompt ──
     prompt = f"""You are a friendly business advisor helping a small business owner understand their sales forecast.
@@ -104,9 +113,9 @@ LANGUAGE RULES:
 
 Here is the forecast data:
 
-PRODUCT: {frontend_data.get('productName', 'Unknown')} ({frontend_data.get('productId', '')})
-HISTORICAL PERIOD: {historical[0]['date']} to {historical[-1]['date']} ({len(historical)} days)
-FORECAST PERIOD: {forecast[0]['date']} to {forecast[-1]['date']} ({len(forecast)} days)
+PRODUCT: {frontend_data.get("productName", "Unknown")} ({frontend_data.get("productId", "")})
+HISTORICAL PERIOD: {historical[0]["date"]} to {historical[-1]["date"]} ({len(historical)} days)
+FORECAST PERIOD: {forecast[0]["date"]} to {forecast[-1]["date"]} ({len(forecast)} days)
 
 KEY NUMBERS:
 - Average daily sales (past): {avg_historical:.1f} units
@@ -120,7 +129,7 @@ RECENT MOMENTUM:
 {momentum_text}
 
 ACCURACY: {confidence_band_text}
-DEMAND TYPE: {demand_profile.get('classification', 'unknown')}
+DEMAND TYPE: {demand_profile.get("classification", "unknown")}
 
 PATTERNS:
 - Busiest day: {peak_day}
@@ -151,7 +160,14 @@ Respond with a JSON object containing:
             "risks": {"type": "array", "items": {"type": "string"}},
             "nextSteps": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["overview", "patterns", "reliability", "recommendations", "risks", "nextSteps"],
+        "required": [
+            "overview",
+            "patterns",
+            "reliability",
+            "recommendations",
+            "risks",
+            "nextSteps",
+        ],
     }
 
     # ── Call Gemini ──

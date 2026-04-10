@@ -7,9 +7,9 @@ so that --autogenerate can detect schema changes.
 
 from logging.config import fileConfig
 
-from alembic import context
-from sqlalchemy import engine_from_config, pool, create_engine
+from sqlalchemy import create_engine, engine_from_config, pool
 
+from alembic import context
 from app.config import settings
 from app.database import Base
 

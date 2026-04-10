@@ -51,6 +51,7 @@ async def chat_with_forecast(
         user_message=body.message,
         history=[msg.model_dump() for msg in body.history],
         db=db,
+        user=current_user,
     )
 
     return success_response(

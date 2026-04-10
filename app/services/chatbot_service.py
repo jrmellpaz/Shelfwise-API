@@ -13,7 +13,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.exceptions import AIServiceException, NotFoundException, ValidationException
+from app.core.exceptions import (
+    AIServiceException,
+    NotFoundException,
+    ValidationException,
+)
 from app.models.forecast import Forecast
 from app.models.forecast_result import ForecastResult
 from app.models.product import Product
@@ -47,7 +51,9 @@ def _summarize_forecast_results(results) -> dict:
     if not results:
         return {"available": False}
 
-    predictions = [float(r.predicted_value) for r in results if r.predicted_value is not None]
+    predictions = [
+        float(r.predicted_value) for r in results if r.predicted_value is not None
+    ]
     if not predictions:
         return {"available": False}
 
@@ -98,8 +104,14 @@ def build_chat_system_prompt(
     ai_explanation = ""
     if forecast.ai_explanation:
         try:
-            explanation = json.loads(forecast.ai_explanation) if isinstance(forecast.ai_explanation, str) else forecast.ai_explanation
-            ai_explanation = f"\nEXISTING AI ANALYSIS:\n{json.dumps(explanation, indent=2)}"
+            explanation = (
+                json.loads(forecast.ai_explanation)
+                if isinstance(forecast.ai_explanation, str)
+                else forecast.ai_explanation
+            )
+            ai_explanation = (
+                f"\nEXISTING AI ANALYSIS:\n{json.dumps(explanation, indent=2)}"
+            )
         except (json.JSONDecodeError, TypeError):
             ai_explanation = f"\nEXISTING AI ANALYSIS:\n{forecast.ai_explanation}"
 
@@ -181,11 +193,14 @@ A: Look for the orange waveform icon button just below the chat textbox. Tap it 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FORECAST CONTEXT DATA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORECAST GENERATED AT: {forecast.forecast_date.strftime("%Y-%m-%d %H:%M:%S") if forecast.forecast_date else "N/A"}
 PRODUCT: {product_name} (ID: {product_id})
-FORECAST MODEL: {forecast.selected_model or 'N/A'}
-DEMAND TYPE: {forecast.demand_profile or 'N/A'}
+FORECAST MODEL: {forecast.selected_model or "N/A"}
+DEMAND TYPE: {forecast.demand_profile or "N/A"}
 FORECAST HORIZON: {forecast.forecast_horizon} days
-SEASONALITY MODE: {forecast.seasonality_mode or 'N/A'}
+TIME GRANULARITY: {forecast.time_granularity or "N/A"}
+CONFIDENCE LEVEL: {forecast.confidence_level or "N/A"}
+SEASONALITY MODE: {forecast.seasonality_mode or "N/A"}
 
 ACCURACY METRICS:
 {json.dumps(metrics_block, indent=2)}
@@ -196,7 +211,7 @@ HISTORICAL SALES SUMMARY:
 FORECAST RESULTS SUMMARY:
 {json.dumps(forecast_summary, indent=2)}
 
-DATA PERIOD: {forecast.data_start_date} to {forecast.data_end_date} ({forecast.data_row_count or 'N/A'} data points)
+DATA PERIOD: {forecast.data_start_date} to {forecast.data_end_date} ({forecast.data_row_count or "N/A"} data points)
 {ai_explanation}
 """
     return prompt
@@ -211,6 +226,7 @@ def chat_with_forecast(
     user_message: str,
     history: list[dict[str, str]],
     db: Session,
+    user=None,
 ) -> str:
     """Send a user message (with history) to Gemini, scoped to a forecast.
 
@@ -219,6 +235,7 @@ def chat_with_forecast(
         user_message: The new message from the user.
         history: Previous messages as [{"role": "user"|"assistant", "content": "..."}].
         db: Database session.
+        user: Optional User ORM object — uses their custom API key if set.
 
     Returns:
         The assistant's reply text.
@@ -234,9 +251,9 @@ def chat_with_forecast(
         )
 
     # ── Validate Gemini availability ──
-    from app.services.gemini_client import get_gemini_client, is_gemini_available
+    from app.services.gemini_client import get_gemini_client_for_user, is_gemini_available_for_user
 
-    if not is_gemini_available():
+    if not is_gemini_available_for_user(user):
         raise AIServiceException("Gemini API key is not configured")
 
     try:
@@ -296,7 +313,7 @@ def chat_with_forecast(
     logger.info("Chatbot calling Gemini (%s) for forecast %s", model_name, forecast_id)
 
     try:
-        client = get_gemini_client()
+        client = get_gemini_client_for_user(user)
         if client is None:
             raise AIServiceException("Failed to create Gemini client")
         response = client.models.generate_content(
@@ -309,7 +326,11 @@ def chat_with_forecast(
             ),
         )
 
-        reply = response.text.strip() if response.text else "I wasn't able to generate a response. Please try rephrasing your question."
+        reply = (
+            response.text.strip()
+            if response.text
+            else "I wasn't able to generate a response. Please try rephrasing your question."
+        )
         logger.info("Chatbot response received (%d chars)", len(reply))
         return reply
 

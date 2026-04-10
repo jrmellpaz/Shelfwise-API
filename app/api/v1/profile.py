@@ -123,6 +123,7 @@ async def get_profile(current_user: User = Depends(get_current_user)):
         "defaultForecastPeriod": current_user.default_forecast_period,
         "defaultConfidenceLevel": current_user.default_confidence_level,
         "holidayCalendar": current_user.holiday_calendar,
+        "hasGeminiKey": bool(current_user.gemini_api_key),
         "createdAt": current_user.created_at.isoformat() if current_user.created_at else None,
     })
 
@@ -448,4 +449,122 @@ async def delete_custom_holiday(
     db.delete(holiday)
     db.commit()
     return success_response(data=None, message="Custom holiday deleted")
+
+
+# ── Gemini API Key Management ─────────────────────────────────
+
+
+def _mask_api_key(key: str) -> str:
+    """Return a masked preview of an API key (e.g. 'AIza...xOQU')."""
+    if len(key) <= 8:
+        return key[:2] + "..." + key[-2:]
+    return key[:4] + "..." + key[-4:]
+
+
+@router.get("/gemini-key")
+async def get_gemini_key(
+    current_user: User = Depends(get_current_user),
+):
+    """Check if the user has a custom Gemini API key configured.
+
+    Returns a masked preview of the key and the timestamp when it was set.
+    Never returns the full key.
+    """
+    if not current_user.gemini_api_key:
+        return success_response(data={
+            "hasKey": False,
+            "keyPreview": None,
+            "addedAt": None,
+        })
+
+    from app.core.encryption import decrypt_value
+
+    decrypted = decrypt_value(current_user.gemini_api_key)
+    preview = _mask_api_key(decrypted) if decrypted else "(unable to decrypt)"
+
+    return success_response(data={
+        "hasKey": True,
+        "keyPreview": preview,
+        "addedAt": (
+            current_user.gemini_api_key_added_at.isoformat()
+            if current_user.gemini_api_key_added_at
+            else None
+        ),
+    })
+
+
+@router.put("/gemini-key")
+async def set_gemini_key(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add or replace the user's custom Gemini API key.
+
+    Validates the key by making a lightweight Gemini API call before storing.
+    The key is encrypted at rest using Fernet.
+    """
+    api_key = (body.get("apiKey") or body.get("api_key") or "").strip()
+
+    if not api_key:
+        raise ValidationException("apiKey is required")
+
+    if len(api_key) < 10:
+        raise ValidationException("API key appears too short to be valid")
+
+    # Validate the key by making a test call to Gemini
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+        # List models is a lightweight call that validates the key
+        list(client.models.list())
+    except ImportError:
+        raise ValidationException("google-genai package is not installed on the server")
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "api key" in error_msg or "invalid" in error_msg or "403" in error_msg or "401" in error_msg:
+            raise ValidationException(
+                "The API key is invalid. Please check your key and try again."
+            )
+        raise ValidationException(f"Failed to validate API key: {str(e)}")
+
+    # Encrypt and store
+    from app.core.encryption import encrypt_value
+
+    current_user.gemini_api_key = encrypt_value(api_key)
+    current_user.gemini_api_key_added_at = datetime.datetime.now(
+        datetime.timezone.utc
+    )
+    db.commit()
+    db.refresh(current_user)
+
+    return success_response(
+        data={
+            "hasKey": True,
+            "keyPreview": _mask_api_key(api_key),
+            "addedAt": current_user.gemini_api_key_added_at.isoformat(),
+        },
+        message="Gemini API key saved successfully",
+    )
+
+
+@router.delete("/gemini-key")
+async def delete_gemini_key(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove the user's custom Gemini API key.
+
+    After deletion, Gemini features will fall back to the server's
+    default API key (if configured).
+    """
+    if not current_user.gemini_api_key:
+        raise NotFoundException("Gemini API key")
+
+    current_user.gemini_api_key = None
+    current_user.gemini_api_key_added_at = None
+    db.commit()
+
+    return success_response(data=None, message="Gemini API key removed")
 
