@@ -31,8 +31,6 @@ class ForecastResult(Base):
     predicted_value = Column(Float, nullable=False)          # yhat
     lower_bound_80 = Column(Float, nullable=True)            # yhat_lower (80%)
     upper_bound_80 = Column(Float, nullable=True)            # yhat_upper (80%)
-    lower_bound_95 = Column(Float, nullable=True)            # yhat_lower (95%)
-    upper_bound_95 = Column(Float, nullable=True)            # yhat_upper (95%)
     trend = Column(Float, nullable=True)                     # Trend component
     weekly_seasonality = Column(Float, nullable=True)        # Weekly effect
     yearly_seasonality = Column(Float, nullable=True)        # Yearly effect

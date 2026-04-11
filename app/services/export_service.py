@@ -34,8 +34,8 @@ def generate_csv_export(results) -> io.BytesIO:
         writer.writerow([
             r.date.isoformat() if r.date else "",
             round(r.predicted_value, 2) if r.predicted_value is not None else "",
-            round(r.lower_bound_95, 2) if r.lower_bound_95 is not None else "",
-            round(r.upper_bound_95, 2) if r.upper_bound_95 is not None else "",
+            round(r.lower_bound_80, 2) if r.lower_bound_80 is not None else "",
+            round(r.upper_bound_80, 2) if r.upper_bound_80 is not None else "",
         ])
 
     # Convert to bytes for StreamingResponse
@@ -75,12 +75,12 @@ def generate_chart_png(forecast, results, historical_data=None) -> io.BytesIO:
     # Plot forecast
     fc_dates = [r.date for r in results]
     fc_values = [float(r.predicted_value) for r in results]
-    fc_lower = [float(r.lower_bound_95) if r.lower_bound_95 else 0 for r in results]
-    fc_upper = [float(r.upper_bound_95) if r.upper_bound_95 else 0 for r in results]
+    fc_lower = [float(r.lower_bound_80) if r.lower_bound_80 else 0 for r in results]
+    fc_upper = [float(r.upper_bound_80) if r.upper_bound_80 else 0 for r in results]
 
     ax.plot(fc_dates, fc_values, color="#E8553D", linewidth=2, label="Forecast")
     ax.fill_between(fc_dates, fc_lower, fc_upper,
-                     color="#E8553D", alpha=0.15, label="95% CI")
+                     color="#E8553D", alpha=0.15, label="80% CI")
 
     # Formatting
     ax.set_xlabel("Date")

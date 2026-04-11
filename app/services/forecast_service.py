@@ -27,6 +27,7 @@ from app.core.exceptions import (
     NotFoundException,
 )
 from app.models.custom_holiday import CustomHoliday
+from app.services.gemini_service import generate_gemini_explanation
 from app.models.forecast import Forecast
 from app.models.forecast_result import ForecastResult
 from app.models.product import Product
@@ -81,6 +82,23 @@ def _clear_forecast_progress(db: Session, forecast_record: Forecast) -> None:
     forecast_record.progress_step = None
     forecast_record.progress_total = None
     forecast_record.progress_label = None
+
+
+class ForecastCancelledException(Exception):
+    """Raised when a forecast is cancelled mid-pipeline."""
+    pass
+
+
+def _check_cancelled(db: Session, forecast_record: Forecast) -> None:
+    """Re-read the forecast status from DB and abort if cancelled.
+
+    Called between major pipeline steps so the background task can
+    exit early when the user cancels via POST /forecasts/{id}/cancel.
+    """
+    db.refresh(forecast_record)
+    if forecast_record.status == "cancelled":
+        logger.info("Forecast %s was cancelled — aborting pipeline", forecast_record.id)
+        raise ForecastCancelledException()
 
 
 # ── Preprocessing ─────────────────────────────────────────────
@@ -228,6 +246,24 @@ def detect_demand_profile(df: pd.DataFrame) -> dict:
     else:
         classification = "smooth"
         recommended = ["prophet", "seasonal_naive", "naive"]
+
+    # Auto-include XGBoost when seasonality is weak
+    from app.services.xgboost_model import (
+        detect_seasonality_strength,
+        MIN_ROWS_XGBOOST,
+    )
+
+    if total_periods >= MIN_ROWS_XGBOOST:
+        autocorr_7 = detect_seasonality_strength(values, lag=7)
+        if autocorr_7 is not None and abs(autocorr_7) < 0.3:
+            # Weak weekly seasonality — XGBoost may outperform Prophet
+            if "xgboost" not in recommended:
+                recommended.insert(0, "xgboost")
+            logger.info(
+                "Weak seasonality detected (autocorr@7=%.3f) — "
+                "adding XGBoost to candidates",
+                autocorr_7,
+            )
 
     profile = {
         "classification": classification,
@@ -437,6 +473,19 @@ def _backtest_single_model(
     custom_holidays_df: pd.DataFrame | None = None,
 ) -> dict:
     """Run rolling backtests for a single candidate model."""
+    # XGBoost has its own backtest implementation
+    if model_name == "xgboost":
+        from app.services.xgboost_model import backtest_xgb_model
+
+        return backtest_xgb_model(
+            df,
+            aggregation,
+            cv_config,
+            country=country,
+            custom_holidays_df=custom_holidays_df,
+            xgb_params=tuned_params,
+        )
+
     from prophet import Prophet
 
     season_length = _infer_season_length(aggregation)
@@ -454,7 +503,11 @@ def _backtest_single_model(
         if test_df.empty:
             continue
 
-        if model_name == "prophet":
+        if model_name == "xgboost":
+            # XGBoost backtesting is handled by its own module; skip
+            # the per-fold loop here and delegate entirely.
+            pass
+        elif model_name == "prophet":
             avg_sales = train_df["y"].mean()
             std_sales = train_df["y"].std()
             cv_val = std_sales / avg_sales if avg_sales > 0 else 0
@@ -478,7 +531,7 @@ def _backtest_single_model(
                 changepoint_prior_scale=cps,
                 seasonality_prior_scale=sps,
                 seasonality_mode=s_mode,
-                interval_width=0.95,
+                interval_width=0.80,
                 daily_seasonality=False,
                 weekly_seasonality=True,
                 yearly_seasonality=True,
@@ -535,19 +588,28 @@ def backtest_and_select(
     country: str | None = None,
     tuned_params: dict | None = None,
     custom_holidays_df: pd.DataFrame | None = None,
+    xgb_tuned_params: dict | None = None,
 ) -> tuple[dict, list[dict], dict]:
     """Backtest all candidates and return the best plus comparison rows."""
     fallback_order = [selection_metric, "mase", "mae", "rmse", "smape", "wape", "mape"]
     results = []
     for model_name in candidate_models:
         try:
+            # Route the correct tuned params to each model
+            if model_name == "prophet":
+                model_params = tuned_params
+            elif model_name == "xgboost":
+                model_params = xgb_tuned_params
+            else:
+                model_params = None
+
             metrics = _backtest_single_model(
                 model_name,
                 df,
                 aggregation,
                 cv_config,
                 country=country,
-                tuned_params=tuned_params if model_name == "prophet" else None,
+                tuned_params=model_params,
                 custom_holidays_df=custom_holidays_df,
             )
             results.append(metrics)
@@ -703,7 +765,7 @@ def train_prophet_model(
         changepoint_prior_scale=cps,
         seasonality_prior_scale=sps,
         seasonality_mode=s_mode,
-        interval_width=0.95,
+        interval_width=0.80,
         daily_seasonality=False,
         weekly_seasonality=True,
         yearly_seasonality=True,
@@ -720,14 +782,27 @@ def train_prophet_model(
     logger.info("Model trained successfully")
 
     future = model.make_future_dataframe(periods=horizon_days)
-    # Fill regressors for future period
+    # Fill regressors for future period by merging known values from
+    # the training data.  ``make_future_dataframe`` only creates the
+    # ``ds`` column, so regressors must be joined back in.  Historical
+    # rows receive their real values; future rows are forward-filled
+    # from the last known observation.
     if regressor_columns:
-        for col in regressor_columns:
-            if col not in future.columns:
-                future[col] = 0
-            future[col] = future[col].ffill().bfill().fillna(0)
+        known = df[["ds", *regressor_columns]].drop_duplicates(
+            subset=["ds"], keep="last"
+        )
+        future = future.merge(known, on="ds", how="left")
+        future[regressor_columns] = (
+            future[regressor_columns].ffill().bfill().fillna(0)
+        )
 
     forecast = model.predict(future)
+
+    # Clamp predictions to non-negative (sales can't be negative)
+    forecast["yhat"] = forecast["yhat"].clip(lower=0)
+    forecast["yhat_lower"] = forecast["yhat_lower"].clip(lower=0)
+    forecast["yhat_upper"] = forecast["yhat_upper"].clip(lower=0)
+
     logger.info("Generated %d-day forecast", horizon_days)
     return model, forecast
 
@@ -750,8 +825,8 @@ def build_baseline_forecast_frame(
         {
             "ds": future_dates,
             "yhat": preds,
-            "yhat_lower": np.maximum(0, preds - 1.96 * residual_scale),
-            "yhat_upper": preds + 1.96 * residual_scale,
+            "yhat_lower": np.maximum(0, preds - 1.28 * residual_scale),
+            "yhat_upper": preds + 1.28 * residual_scale,
         }
     )
     return {"model_name": model_name}, forecast
@@ -807,20 +882,21 @@ def format_frontend_data(
     """Shape all results into the JSON structure the frontend needs."""
     last_historical_date = df["ds"].max()
 
-    # Historical data
+    # Historical data — sales are always whole units
     historical = [
-        {"date": row["ds"].strftime("%Y-%m-%d"), "actual": round(float(row["y"]), 1)}
+        {"date": row["ds"].strftime("%Y-%m-%d"), "actual": int(round(float(row["y"])))}
         for _, row in df.iterrows()
     ]
 
-    # Forecast data
+    # Forecast data — inventory quantities are discrete; round up
+    # predicted/upper (never understock) and floor lower bound.
     future_rows = forecast_df[forecast_df["ds"] > last_historical_date]
     forecast_data = [
         {
             "date": row["ds"].strftime("%Y-%m-%d"),
-            "predicted": round(float(row["yhat"]), 1),
-            "lowerBound": round(float(max(0, row.get("yhat_lower", 0))), 1),
-            "upperBound": round(float(row.get("yhat_upper", row["yhat"])), 1),
+            "predicted": max(0, math.ceil(float(row["yhat"]))),
+            "lowerBound": max(0, math.floor(float(row.get("yhat_lower", 0)))),
+            "upperBound": max(0, math.ceil(float(row.get("yhat_upper", row["yhat"])))),
         }
         for _, row in future_rows.iterrows()
     ]
@@ -922,6 +998,53 @@ def fetch_weather_data(
         return None
 
 
+def fetch_weather_forecast(
+    latitude: float,
+    longitude: float,
+    days: int = 16,
+) -> pd.DataFrame | None:
+    """Fetch near-future weather forecast from Open-Meteo Forecast API.
+
+    Returns up to 16 days of forecast data (daily temperature + precipitation).
+    Used to provide regressor values for the near-future portion of the
+    forecast horizon, rather than relying solely on forward-fill.
+    """
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "daily": ["temperature_2m_mean", "precipitation_sum"],
+        "forecast_days": min(days, 16),
+        "timezone": "auto",
+    }
+    try:
+        response = http_requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        weather_df = pd.DataFrame(
+            {
+                "ds": pd.to_datetime(data["daily"]["time"]),
+                "temperature": data["daily"]["temperature_2m_mean"],
+                "precipitation": data["daily"]["precipitation_sum"],
+            }
+        )
+        return weather_df.ffill().bfill()
+    except Exception as e:
+        logger.warning("Failed to fetch weather forecast: %s", e)
+        return None
+
+
+def _resolve_user_location(user) -> tuple[float, float]:
+    """Return (latitude, longitude) for a user, falling back to country capital."""
+    from app.api.v1.profile import COUNTRY_CAPITALS
+
+    if user.location_latitude is not None and user.location_longitude is not None:
+        return (user.location_latitude, user.location_longitude)
+    country = user.holiday_calendar or "PH"
+    capital = COUNTRY_CAPITALS.get(country, COUNTRY_CAPITALS["PH"])
+    return (capital[1], capital[2])
+
+
 # ── Master Orchestrator ───────────────────────────────────────
 
 
@@ -995,15 +1118,45 @@ def run_forecast(
         # Load user's custom holidays for Prophet
         custom_holidays_df = build_custom_holidays_df(db, forecast_record.user_id)
 
+        # Fetch weather data for the user's location (if enabled)
+        weather_data = None
+        weather_enabled = getattr(user, "weather_enabled", True) if user else False
+        if user and weather_enabled:
+            lat, lng = _resolve_user_location(user)
+            start_str = df["date"].min().strftime("%Y-%m-%d")
+            end_str = df["date"].max().strftime("%Y-%m-%d")
+            logger.info(
+                "Fetching weather data for (%.4f, %.4f) from %s to %s",
+                lat, lng, start_str, end_str,
+            )
+            weather_data = fetch_weather_data(start_str, end_str, lat, lng)
+
+            # Also fetch near-future weather forecast and append
+            forecast_weather = fetch_weather_forecast(lat, lng, days=min(horizon_days, 16))
+            if weather_data is not None and forecast_weather is not None:
+                weather_data = pd.concat(
+                    [weather_data, forecast_weather], ignore_index=True
+                ).drop_duplicates(subset=["ds"], keep="last").sort_values("ds").reset_index(drop=True)
+            elif forecast_weather is not None:
+                weather_data = forecast_weather
+
+            if weather_data is not None:
+                logger.info("Weather data loaded: %d rows", len(weather_data))
+            else:
+                logger.warning("Weather data unavailable — proceeding without regressors")
+
         # Step 1: Preprocess
         _persist_forecast_progress(db, forecast_record, 1, "Preparing data")
+        _check_cancelled(db, forecast_record)
         logger.info("Preprocessing data for forecast %s", forecast_id)
-        processed = preprocess_for_prophet(df, aggregation=aggregation)
+        processed = preprocess_for_prophet(df, aggregation=aggregation, weather_data=weather_data)
 
         # Step 2: Demand profiling
         _persist_forecast_progress(db, forecast_record, 2, "Selecting model")
+        _check_cancelled(db, forecast_record)
         demand_profile = detect_demand_profile(processed)
         forecast_record.demand_profile = demand_profile["classification"]
+        db.commit()
 
         # Step 2.5: Optuna hyperparameter tuning (if enabled)
         init_params = forecast_record.model_parameters or {}
@@ -1016,6 +1169,7 @@ def run_forecast(
         cv_config = determine_cv_config(processed)
 
         if enable_tuning and "prophet" in candidates:
+            _check_cancelled(db, forecast_record)
             logger.info("Running Optuna tuning for forecast %s", forecast_id)
             tuned_params = optuna_tune_prophet(
                 processed,
@@ -1028,7 +1182,30 @@ def run_forecast(
             if tuned_params:
                 forecast_record.tuned_parameters = tuned_params
 
+        # Optuna tuning for XGBoost (separate param set)
+        xgb_tuned_params = None
+        if enable_tuning and "xgboost" in candidates:
+            _check_cancelled(db, forecast_record)
+            from app.services.xgboost_model import optuna_tune_xgboost
+
+            logger.info("Running Optuna XGBoost tuning for forecast %s", forecast_id)
+            xgb_tuned_params = optuna_tune_xgboost(
+                processed,
+                aggregation,
+                cv_config,
+                country=country,
+                custom_holidays_df=custom_holidays_df,
+                n_trials=tune_trials,
+            )
+            if xgb_tuned_params:
+                existing_tuned = forecast_record.tuned_parameters or {}
+                forecast_record.tuned_parameters = {
+                    **existing_tuned,
+                    "xgboost": xgb_tuned_params,
+                }
+
         # Step 3: Model selection & backtesting
+        _check_cancelled(db, forecast_record)
         logger.info("Running backtests for forecast %s", forecast_id)
 
         best_metrics, comparison_rows, selection_details = backtest_and_select(
@@ -1040,12 +1217,14 @@ def run_forecast(
             country=country,
             tuned_params=tuned_params,
             custom_holidays_df=custom_holidays_df,
+            xgb_tuned_params=xgb_tuned_params,
         )
         selected_model = best_metrics["model"]
         forecast_record.selected_model = selected_model
 
         # Step 4: Train model
         _persist_forecast_progress(db, forecast_record, 3, "Training model")
+        _check_cancelled(db, forecast_record)
         logger.info("Training %s for forecast %s", selected_model, forecast_id)
         if selected_model == "prophet":
             model, forecast_df = train_prophet_model(
@@ -1054,6 +1233,16 @@ def run_forecast(
                 country=country,
                 tuned_params=tuned_params,
                 custom_holidays_df=custom_holidays_df,
+            )
+        elif selected_model == "xgboost":
+            from app.services.xgboost_model import train_xgb_model
+
+            model, forecast_df = train_xgb_model(
+                processed,
+                horizon_days=horizon_days,
+                country=country,
+                custom_holidays_df=custom_holidays_df,
+                xgb_params=xgb_tuned_params,
             )
         else:
             model, forecast_df = build_baseline_forecast_frame(
@@ -1090,6 +1279,10 @@ def run_forecast(
             "demandProfile": demand_profile,
         }
 
+        # Persist metrics + metadata now so the upcoming _check_cancelled
+        # (which calls db.refresh) does not discard them.
+        db.commit()
+
         # Step 7: Format frontend data
         frontend_data = format_frontend_data(
             processed, forecast_df, best_metrics, product.product_id, product.name
@@ -1098,7 +1291,8 @@ def run_forecast(
         frontend_data["selectedModel"] = selected_model
         frontend_data["demandProfile"] = demand_profile
 
-        # Step 4: Store forecast results (commit together so /results is not empty at this step)
+        # Store forecast results (commit together so /results is not empty at this step)
+        _check_cancelled(db, forecast_record)
         last_historical = processed["ds"].max()
         future_rows = forecast_df[forecast_df["ds"] > last_historical]
         result_records = []
@@ -1107,11 +1301,9 @@ def run_forecast(
                 ForecastResult(
                     forecast_id=forecast_record.id,
                     date=row["ds"].date(),
-                    predicted_value=round(float(row["yhat"]), 2),
-                    lower_bound_80=round(float(max(0, row.get("yhat_lower", 0))), 2),
-                    upper_bound_80=round(float(row.get("yhat_upper", row["yhat"])), 2),
-                    lower_bound_95=round(float(max(0, row.get("yhat_lower", 0))), 2),
-                    upper_bound_95=round(float(row.get("yhat_upper", row["yhat"])), 2),
+                    predicted_value=max(0, math.ceil(float(row["yhat"]))),
+                    lower_bound_80=max(0, math.floor(float(row.get("yhat_lower", 0)))),
+                    upper_bound_80=max(0, math.ceil(float(row.get("yhat_upper", row["yhat"])))),
                     trend=round(float(row.get("trend", 0)), 2)
                     if "trend" in row
                     else None,
@@ -1130,6 +1322,7 @@ def run_forecast(
         db.commit()
 
         # Step 5: AI explanation (status already used by clients for this phase)
+        _check_cancelled(db, forecast_record)
         forecast_record.progress_step = 5
         forecast_record.progress_total = FORECAST_PROGRESS_TOTAL
         forecast_record.progress_label = "Generating explanation"
@@ -1155,13 +1348,17 @@ def run_forecast(
         db.commit()
         logger.info("Forecast %s completed successfully", forecast_id)
 
+    except ForecastCancelledException:
+        logger.info("Forecast %s pipeline aborted (cancelled by user)", forecast_id)
+        # Status is already 'cancelled' — nothing more to do.
+
     except Exception as e:
         logger.error("Forecast %s failed: %s", forecast_id, e, exc_info=True)
         try:
             forecast_record = (
                 db.query(Forecast).filter(Forecast.id == forecast_id).first()
             )
-            if forecast_record:
+            if forecast_record and forecast_record.status != "cancelled":
                 _clear_forecast_progress(db, forecast_record)
                 forecast_record.status = "failed"
                 forecast_record.error_message = str(e)

@@ -4,7 +4,7 @@ User SQLAlchemy model — Section 4.2 'users' table.
 
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -22,10 +22,15 @@ class User(Base):
     mobile_number = Column(String, nullable=True)
     business_logo = Column(Text, nullable=True)
     default_forecast_period = Column(Integer, default=3)  # months (1–12)
-    default_confidence_level = Column(String, default="95")  # '80', '95', or 'both'
+    default_confidence_level = Column(String, default="80")  # legacy — no longer exposed to frontend
     holiday_calendar = Column(String, default="PH")  # country code
     gemini_api_key = Column(Text, nullable=True)  # Fernet-encrypted
     gemini_api_key_added_at = Column(DateTime(timezone=True), nullable=True)
+    location_latitude = Column(Float, nullable=True)
+    location_longitude = Column(Float, nullable=True)
+    location_city = Column(String, nullable=True)
+    location_country_name = Column(String, nullable=True)
+    weather_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

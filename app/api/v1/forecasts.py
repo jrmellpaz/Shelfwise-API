@@ -4,6 +4,7 @@ Forecast endpoints — /api/v1/forecasts/*
 POST /                   — Generate a new forecast (async)
 GET  /                   — List forecast history (paginated)
 GET  /{id}               — Get full forecast details
+POST /{id}/cancel        — Cancel an in-progress forecast
 GET  /{id}/results       — Get forecast data points
 GET  /{id}/components    — Get component breakdown
 GET  /{id}/export/csv    — Download forecast results as CSV
@@ -75,7 +76,7 @@ async def generate_forecast(
         forecast_date=datetime.utcnow(),
         forecast_horizon=body.horizon_days,
         time_granularity=body.time_granularity,
-        confidence_level=body.confidence_level,
+        confidence_level="80",
         model_parameters={
             "enable_tuning": body.enable_tuning,
             "tune_trials": body.tune_trials,
@@ -94,6 +95,45 @@ async def generate_forecast(
     return success_response(
         data={"id": str(forecast.id), "status": "processing"},
         message="Forecast generation started",
+    )
+
+
+@router.post("/{forecast_uuid}/cancel")
+async def cancel_forecast(
+    forecast_uuid: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Cancel an in-progress forecast.
+
+    Sets the forecast status to 'cancelled'. The background pipeline
+    checks this flag between steps and aborts early. Only forecasts
+    with status 'processing' or 'generating_explanation' can be cancelled.
+    """
+    forecast = (
+        db.query(Forecast)
+        .filter(Forecast.id == forecast_uuid, Forecast.user_id == current_user.id)
+        .first()
+    )
+    if not forecast:
+        raise NotFoundException("Forecast")
+
+    if forecast.status not in ("processing", "generating_explanation"):
+        raise ValidationException(
+            f"Forecast cannot be cancelled (status: {forecast.status})"
+        )
+
+    forecast.status = "cancelled"
+    forecast.progress_step = None
+    forecast.progress_total = None
+    forecast.progress_label = None
+    db.commit()
+
+    logger.info("Forecast %s cancelled by user %s", forecast_uuid, current_user.id)
+
+    return success_response(
+        data={"id": str(forecast.id), "status": "cancelled"},
+        message="Forecast cancelled",
     )
 
 
@@ -200,8 +240,6 @@ async def get_forecast_results(
             "predictedValue": r.predicted_value,
             "lowerBound80": r.lower_bound_80,
             "upperBound80": r.upper_bound_80,
-            "lowerBound95": r.lower_bound_95,
-            "upperBound95": r.upper_bound_95,
             "trend": r.trend,
             "weeklySeasonality": r.weekly_seasonality,
             "yearlySeasonality": r.yearly_seasonality,

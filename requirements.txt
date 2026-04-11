@@ -21,6 +21,8 @@ prophet>=1.1.0
 pandas>=2.0.0
 numpy>=1.24.0
 optuna>=4.0.0
+xgboost>=2.0.0
+holidays>=0.40
 
 # External Data & AI
 requests>=2.31.0

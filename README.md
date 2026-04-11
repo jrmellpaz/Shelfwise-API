@@ -40,21 +40,21 @@ Forecasts run asynchronously: the API returns immediately with a job ID, and the
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Web Framework | [FastAPI](https://fastapi.tiangolo.com/) |
-| ASGI Server | [Uvicorn](https://www.uvicorn.org/) |
-| ORM | [SQLAlchemy](https://www.sqlalchemy.org/) |
-| Database | PostgreSQL (via `psycopg2-binary`) |
-| Migrations | [Alembic](https://alembic.sqlalchemy.org/) |
-| Configuration | [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) |
-| Authentication | JWT (`python-jose`) + `passlib[bcrypt]` |
-| Rate Limiting | [SlowAPI](https://github.com/laurentS/slowapi) |
-| Forecasting | [Prophet](https://facebook.github.io/prophet/) |
-| Data Science | pandas, NumPy |
-| Hyperparameter Tuning | [Optuna](https://optuna.org/) |
-| AI Explanations | [Google Gemini API](https://ai.google.dev/) (`google-genai`) |
-| Weather Regressors | [Open-Meteo](https://open-meteo.com/) (optional) |
+| Layer                 | Technology                                                                        |
+| --------------------- | --------------------------------------------------------------------------------- |
+| Web Framework         | [FastAPI](https://fastapi.tiangolo.com/)                                          |
+| ASGI Server           | [Uvicorn](https://www.uvicorn.org/)                                               |
+| ORM                   | [SQLAlchemy](https://www.sqlalchemy.org/)                                         |
+| Database              | PostgreSQL (via `psycopg2-binary`)                                                |
+| Migrations            | [Alembic](https://alembic.sqlalchemy.org/)                                        |
+| Configuration         | [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) |
+| Authentication        | JWT (`python-jose`) + `passlib[bcrypt]`                                           |
+| Rate Limiting         | [SlowAPI](https://github.com/laurentS/slowapi)                                    |
+| Forecasting           | [Prophet](https://facebook.github.io/prophet/)                                    |
+| Data Science          | pandas, NumPy                                                                     |
+| Hyperparameter Tuning | [Optuna](https://optuna.org/)                                                     |
+| AI Explanations       | [Google Gemini API](https://ai.google.dev/) (`google-genai`)                      |
+| Weather Regressors    | [Open-Meteo](https://open-meteo.com/) (optional)                                  |
 
 ---
 
@@ -134,109 +134,116 @@ shelfwise-api/
 ## Database Schema
 
 ### `users`
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | Auto-generated |
-| `email` | String | Unique, lowercase |
-| `password_hash` | String | bcrypt hash |
-| `name` | String | ✔ |
-| `contact_email` | String | Optional |
-| `mobile_number` | String | Optional |
-| `business_logo` | String | Optional URL/path |
-| `default_forecast_period` | Integer | In days |
-| `default_confidence_level` | String | `'80'`, `'95'`, or `'both'` |
-| `holiday_calendar` | String | ISO country code (e.g., `'PH'`) |
-| `created_at` | Timestamp | Server default |
+
+| Column                     | Type      | Notes                           |
+| -------------------------- | --------- | ------------------------------- |
+| `id`                       | UUID (PK) | Auto-generated                  |
+| `email`                    | String    | Unique, lowercase               |
+| `password_hash`            | String    | bcrypt hash                     |
+| `name`                     | String    | ✔                               |
+| `contact_email`            | String    | Optional                        |
+| `mobile_number`            | String    | Optional                        |
+| `business_logo`            | String    | Optional URL/path               |
+| `default_forecast_period`  | Integer   | In days                         |
+| `default_confidence_level` | String    | `'80'`, `'95'`, or `'both'`     |
+| `holiday_calendar`         | String    | ISO country code (e.g., `'PH'`) |
+| `created_at`               | Timestamp | Server default                  |
 
 ### `products`
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | Auto-generated |
-| `user_id` | UUID (FK → users) | CASCADE delete |
-| `product_id` | String | SKU from CSV |
-| `name` | String | From CSV `product_name` |
-| `category` | String | User-editable metadata |
-| `description` | Text | User-editable metadata |
-| `notes` | Text | User-editable metadata |
-| `is_archived` | Boolean | Default `false` |
-| `created_at` | Timestamp | |
-| `updated_at` | Timestamp | Auto-updated |
+
+| Column        | Type              | Notes                   |
+| ------------- | ----------------- | ----------------------- |
+| `id`          | UUID (PK)         | Auto-generated          |
+| `user_id`     | UUID (FK → users) | CASCADE delete          |
+| `product_id`  | String            | SKU from CSV            |
+| `name`        | String            | From CSV `product_name` |
+| `category`    | String            | User-editable metadata  |
+| `description` | Text              | User-editable metadata  |
+| `notes`       | Text              | User-editable metadata  |
+| `is_archived` | Boolean           | Default `false`         |
+| `created_at`  | Timestamp         |                         |
+| `updated_at`  | Timestamp         | Auto-updated            |
 
 ### `sales_data`
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | |
-| `user_id` | UUID (FK → users) | |
-| `product_id` | UUID (FK → products) | |
-| `date` | Date | |
-| `quantity_sold` | Float | |
-| `created_at` | Timestamp | |
+
+| Column          | Type                 | Notes |
+| --------------- | -------------------- | ----- |
+| `id`            | UUID (PK)            |       |
+| `user_id`       | UUID (FK → users)    |       |
+| `product_id`    | UUID (FK → products) |       |
+| `date`          | Date                 |       |
+| `quantity_sold` | Float                |       |
+| `created_at`    | Timestamp            |       |
 
 ### `csv_upload_sessions`
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | Returned to the client as **`uploadSessionId`** |
-| `user_id` | UUID (FK → users) | Owner; CASCADE delete |
-| `filename` | String | Original upload name |
-| `raw_bytes` | BYTEA | Full CSV (max size enforced before insert) |
-| `stage` | String | `uploaded` or `validated` |
-| `column_map` | JSONB | Set after validate; used to replay parse on confirm |
-| `created_at` | Timestamp | |
-| `expires_at` | Timestamp | TTL (`UPLOAD_SESSION_TTL_HOURS`) |
+
+| Column       | Type              | Notes                                               |
+| ------------ | ----------------- | --------------------------------------------------- |
+| `id`         | UUID (PK)         | Returned to the client as **`uploadSessionId`**     |
+| `user_id`    | UUID (FK → users) | Owner; CASCADE delete                               |
+| `filename`   | String            | Original upload name                                |
+| `raw_bytes`  | BYTEA             | Full CSV (max size enforced before insert)          |
+| `stage`      | String            | `uploaded` or `validated`                           |
+| `column_map` | JSONB             | Set after validate; used to replay parse on confirm |
+| `created_at` | Timestamp         |                                                     |
+| `expires_at` | Timestamp         | TTL (`UPLOAD_SESSION_TTL_HOURS`)                    |
 
 ### `forecasts`
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | |
-| `user_id` | UUID (FK → users) | |
-| `product_id` | UUID (FK → products) | |
-| `forecast_date` | Timestamp | When forecast was requested |
-| `forecast_horizon` | Integer | Days ahead to forecast |
-| `time_granularity` | String | `daily`, `weekly`, `monthly` |
-| `confidence_level` | String | `'80'`, `'95'`, `'both'` |
-| `seasonality_mode` | String | `additive` or `multiplicative` |
-| `selected_model` | String | e.g., `prophet`, `croston_sba` |
-| `demand_profile` | String | `smooth`, `erratic`, `intermittent`, `lumpy` |
-| `status` | String | `processing` → `generating_explanation` → `completed` / `failed` |
-| `mape` | Float | Mean Absolute Percentage Error |
-| `wape` | Float | Weighted APE |
-| `smape` | Float | Symmetric MAPE |
-| `mase` | Float | Mean Absolute Scaled Error |
-| `rmse` | Float | Root Mean Square Error |
-| `mae` | Float | Mean Absolute Error |
-| `data_start_date` | Date | |
-| `data_end_date` | Date | |
-| `data_row_count` | Integer | |
-| `model_parameters` | JSONB | Default Prophet params |
-| `tuned_parameters` | JSONB | Optuna-tuned params |
-| `ai_explanation` | Text | Gemini-generated summary |
-| `error_message` | Text | Populated on failure |
-| `created_at` | Timestamp | |
+
+| Column             | Type                 | Notes                                                            |
+| ------------------ | -------------------- | ---------------------------------------------------------------- |
+| `id`               | UUID (PK)            |                                                                  |
+| `user_id`          | UUID (FK → users)    |                                                                  |
+| `product_id`       | UUID (FK → products) |                                                                  |
+| `forecast_date`    | Timestamp            | When forecast was requested                                      |
+| `forecast_horizon` | Integer              | Days ahead to forecast                                           |
+| `time_granularity` | String               | `daily`, `weekly`, `monthly`                                     |
+| `confidence_level` | String               | `'80'`, `'95'`, `'both'`                                         |
+| `seasonality_mode` | String               | `additive` or `multiplicative`                                   |
+| `selected_model`   | String               | e.g., `prophet`, `croston_sba`                                   |
+| `demand_profile`   | String               | `smooth`, `erratic`, `intermittent`, `lumpy`                     |
+| `status`           | String               | `processing` → `generating_explanation` → `completed` / `failed` |
+| `mape`             | Float                | Mean Absolute Percentage Error                                   |
+| `wape`             | Float                | Weighted APE                                                     |
+| `smape`            | Float                | Symmetric MAPE                                                   |
+| `mase`             | Float                | Mean Absolute Scaled Error                                       |
+| `rmse`             | Float                | Root Mean Square Error                                           |
+| `mae`              | Float                | Mean Absolute Error                                              |
+| `data_start_date`  | Date                 |                                                                  |
+| `data_end_date`    | Date                 |                                                                  |
+| `data_row_count`   | Integer              |                                                                  |
+| `model_parameters` | JSONB                | Default Prophet params                                           |
+| `tuned_parameters` | JSONB                | Optuna-tuned params                                              |
+| `ai_explanation`   | Text                 | Gemini-generated summary                                         |
+| `error_message`    | Text                 | Populated on failure                                             |
+| `created_at`       | Timestamp            |                                                                  |
 
 ### `forecast_results`
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | |
-| `forecast_id` | UUID (FK → forecasts) | CASCADE delete |
-| `date` | Date | |
-| `predicted_value` | Float | |
-| `lower_bound_80` | Float | |
-| `upper_bound_80` | Float | |
-| `lower_bound_95` | Float | |
-| `upper_bound_95` | Float | |
-| `trend` | Float | Prophet trend component |
-| `weekly_seasonality` | Float | Prophet weekly component |
-| `yearly_seasonality` | Float | Prophet yearly component |
+
+| Column               | Type                  | Notes                    |
+| -------------------- | --------------------- | ------------------------ |
+| `id`                 | UUID (PK)             |                          |
+| `forecast_id`        | UUID (FK → forecasts) | CASCADE delete           |
+| `date`               | Date                  |                          |
+| `predicted_value`    | Float                 |                          |
+| `lower_bound_80`     | Float                 |                          |
+| `upper_bound_80`     | Float                 |                          |
+| `lower_bound_95`     | Float                 |                          |
+| `upper_bound_95`     | Float                 |                          |
+| `trend`              | Float                 | Prophet trend component  |
+| `weekly_seasonality` | Float                 | Prophet weekly component |
+| `yearly_seasonality` | Float                 | Prophet yearly component |
 
 ### `custom_holidays`
-| Column | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | Auto-generated |
-| `user_id` | UUID (FK → users) | CASCADE delete |
-| `name` | String | Holiday name (e.g., "Company Anniversary") |
-| `date` | Date | The holiday date |
-| `created_at` | Timestamp | Server default |
-| `updated_at` | Timestamp | Auto-updated |
+
+| Column       | Type              | Notes                                      |
+| ------------ | ----------------- | ------------------------------------------ |
+| `id`         | UUID (PK)         | Auto-generated                             |
+| `user_id`    | UUID (FK → users) | CASCADE delete                             |
+| `name`       | String            | Holiday name (e.g., "Company Anniversary") |
+| `date`       | Date              | The holiday date                           |
+| `created_at` | Timestamp         | Server default                             |
+| `updated_at` | Timestamp         | Auto-updated                               |
 
 > Unique constraint on `(user_id, date)` — one custom holiday per date per user.
 
@@ -248,82 +255,82 @@ All endpoints are prefixed with `/api/v1`. Interactive docs are available at `/d
 
 ### Authentication — `/api/v1/auth`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `POST` | `/auth/register` | No | Create a new user account |
-| `POST` | `/auth/login` | No | Authenticate and get token pair |
-| `POST` | `/auth/refresh` | No | Exchange refresh token for new access token |
-| `POST` | `/auth/logout` | Yes | Acknowledge client-side logout |
-| `GET` | `/auth/me` | Yes | Get current user info |
+| Method | Endpoint         | Auth Required | Description                                 |
+| ------ | ---------------- | ------------- | ------------------------------------------- |
+| `POST` | `/auth/register` | No            | Create a new user account                   |
+| `POST` | `/auth/login`    | No            | Authenticate and get token pair             |
+| `POST` | `/auth/refresh`  | No            | Exchange refresh token for new access token |
+| `POST` | `/auth/logout`   | Yes           | Acknowledge client-side logout              |
+| `GET`  | `/auth/me`       | Yes           | Get current user info                       |
 
 ### Upload — `/api/v1/upload`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `POST` | `/upload/` | Yes | Upload CSV; returns column detection, suggested mappings, and **`uploadSessionId`** |
-| `POST` | `/upload/validate` | Yes | Apply `columnMap` to the session’s file; returns quality preview (does not commit) |
-| `POST` | `/upload/confirm` | Yes | Commit validated data; body must include **`uploadSessionId`** and optional **`skipProductIds`** |
-| `GET` | `/upload/template` | No | Download a sample CSV template |
+| Method | Endpoint           | Auth Required | Description                                                                                      |
+| ------ | ------------------ | ------------- | ------------------------------------------------------------------------------------------------ |
+| `POST` | `/upload/`         | Yes           | Upload CSV; returns column detection, suggested mappings, and **`uploadSessionId`**              |
+| `POST` | `/upload/validate` | Yes           | Apply `columnMap` to the session’s file; returns quality preview (does not commit)               |
+| `POST` | `/upload/confirm`  | Yes           | Commit validated data; body must include **`uploadSessionId`** and optional **`skipProductIds`** |
+| `GET`  | `/upload/template` | No            | Download a sample CSV template                                                                   |
 
 > **Three-step upload:** (1) `POST /upload/` stores the file in a server-side session and returns **`uploadSessionId`**. (2) `POST /upload/validate` sends **`uploadSessionId`** + **`columnMap`**. (3) `POST /upload/confirm` sends **`uploadSessionId`** (and optional skips) to write `sales_data`. Sessions expire after `UPLOAD_SESSION_TTL_HOURS` (default 24). See [references/FRONTEND_INTEGRATION.md](references/FRONTEND_INTEGRATION.md) for client patterns.
 
 ### Products — `/api/v1/products`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `GET` | `/products/` | Yes | List all products (paginated, filterable by category/archived status) |
-| `GET` | `/products/{id}` | Yes | Get a single product's details |
-| `PATCH` | `/products/{id}` | Yes | Update metadata (category, description, notes) |
-| `PATCH` | `/products/{id}/archive` | Yes | Toggle archive/unarchive status |
+| Method  | Endpoint                 | Auth Required | Description                                                           |
+| ------- | ------------------------ | ------------- | --------------------------------------------------------------------- |
+| `GET`   | `/products/`             | Yes           | List all products (paginated, filterable by category/archived status) |
+| `GET`   | `/products/{id}`         | Yes           | Get a single product's details                                        |
+| `PATCH` | `/products/{id}`         | Yes           | Update metadata (category, description, notes)                        |
+| `PATCH` | `/products/{id}/archive` | Yes           | Toggle archive/unarchive status                                       |
 
 ### Forecasts — `/api/v1/forecasts`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `POST` | `/forecasts/` | Yes | Generate a new forecast (async). Set `enableTuning: true` for Optuna hyperparameter optimization |
-| `GET` | `/forecasts/` | Yes | List forecast history (paginated, filterable by product) |
-| `GET` | `/forecasts/{id}` | Yes | Get full forecast details including all metrics and AI explanation |
-| `GET` | `/forecasts/{id}/results` | Yes | Get forecast data points (predictions + confidence bounds + components) |
-| `GET` | `/forecasts/{id}/components` | Yes | Get aggregated component breakdown (trend, weekly, yearly seasonality) |
-| `GET` | `/forecasts/{id}/export/csv` | Yes | Download forecast results as CSV |
-| `GET` | `/forecasts/{id}/export/chart` | Yes | Download forecast chart as PNG image |
-| `GET` | `/forecasts/{id}/export/pdf` | Yes | Download full forecast report as PDF |
-| `POST` | `/forecasts/{id}/chat` | Yes | Send a message to Shelfwise Advisor (AI chatbot) about a forecast |
-| `POST` | `/forecasts/{id}/share` | Yes | Generate a shareable link (optional: `expiresInHours`) |
-| `DELETE` | `/forecasts/{id}/share` | Yes | Revoke a shareable link |
+| Method   | Endpoint                       | Auth Required | Description                                                                                      |
+| -------- | ------------------------------ | ------------- | ------------------------------------------------------------------------------------------------ |
+| `POST`   | `/forecasts/`                  | Yes           | Generate a new forecast (async). Set `enableTuning: true` for Optuna hyperparameter optimization |
+| `GET`    | `/forecasts/`                  | Yes           | List forecast history (paginated, filterable by product)                                         |
+| `GET`    | `/forecasts/{id}`              | Yes           | Get full forecast details including all metrics and AI explanation                               |
+| `GET`    | `/forecasts/{id}/results`      | Yes           | Get forecast data points (predictions + confidence bounds + components)                          |
+| `GET`    | `/forecasts/{id}/components`   | Yes           | Get aggregated component breakdown (trend, weekly, yearly seasonality)                           |
+| `GET`    | `/forecasts/{id}/export/csv`   | Yes           | Download forecast results as CSV                                                                 |
+| `GET`    | `/forecasts/{id}/export/chart` | Yes           | Download forecast chart as PNG image                                                             |
+| `GET`    | `/forecasts/{id}/export/pdf`   | Yes           | Download full forecast report as PDF                                                             |
+| `POST`   | `/forecasts/{id}/chat`         | Yes           | Send a message to Shelfwise Advisor (AI chatbot) about a forecast                                |
+| `POST`   | `/forecasts/{id}/share`        | Yes           | Generate a shareable link (optional: `expiresInHours`)                                           |
+| `DELETE` | `/forecasts/{id}/share`        | Yes           | Revoke a shareable link                                                                          |
 
 ### Shared — `/api/v1/shared`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `GET` | `/shared/forecasts/{token}` | **No** | View a shared forecast report (public) |
+| Method | Endpoint                    | Auth Required | Description                            |
+| ------ | --------------------------- | ------------- | -------------------------------------- |
+| `GET`  | `/shared/forecasts/{token}` | **No**        | View a shared forecast report (public) |
 
 ### Dashboard — `/api/v1/dashboard`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `GET` | `/dashboard/` | Yes | Get quick stats (total products, total forecasts, average MAPE, last upload) and recent 5 forecasts |
+| Method | Endpoint      | Auth Required | Description                                                                                         |
+| ------ | ------------- | ------------- | --------------------------------------------------------------------------------------------------- |
+| `GET`  | `/dashboard/` | Yes           | Get quick stats (total products, total forecasts, average MAPE, last upload) and recent 5 forecasts |
 
 ### Profile — `/api/v1/profile`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `GET` | `/profile/` | Yes | Get user profile and forecasting preferences |
-| `PATCH` | `/profile/` | Yes | Update profile info and default forecast settings |
-| `PUT` | `/profile/password` | Yes | Change password (requires current password) |
-| `GET` | `/profile/holidays` | Yes | Get holiday calendar setting and list of supported country codes |
-| `PUT` | `/profile/holidays` | Yes | Update holiday calendar country code |
-| `GET` | `/profile/holidays/builtin` | Yes | List built-in holidays for the user's country calendar (query: `?year=2026`) |
-| `GET` | `/profile/holidays/custom` | Yes | List user's custom holidays (query: `?year=2026`) |
-| `POST` | `/profile/holidays/custom` | Yes | Create a custom holiday (`name`, `date`) |
-| `PUT` | `/profile/holidays/custom/{id}` | Yes | Update a custom holiday's name or date |
-| `DELETE` | `/profile/holidays/custom/{id}` | Yes | Delete a custom holiday |
+| Method   | Endpoint                        | Auth Required | Description                                                                  |
+| -------- | ------------------------------- | ------------- | ---------------------------------------------------------------------------- |
+| `GET`    | `/profile/`                     | Yes           | Get user profile and forecasting preferences                                 |
+| `PATCH`  | `/profile/`                     | Yes           | Update profile info and default forecast settings                            |
+| `PUT`    | `/profile/password`             | Yes           | Change password (requires current password)                                  |
+| `GET`    | `/profile/holidays`             | Yes           | Get holiday calendar setting and list of supported country codes             |
+| `PUT`    | `/profile/holidays`             | Yes           | Update holiday calendar country code                                         |
+| `GET`    | `/profile/holidays/builtin`     | Yes           | List built-in holidays for the user's country calendar (query: `?year=2026`) |
+| `GET`    | `/profile/holidays/custom`      | Yes           | List user's custom holidays (query: `?year=2026`)                            |
+| `POST`   | `/profile/holidays/custom`      | Yes           | Create a custom holiday (`name`, `date`)                                     |
+| `PUT`    | `/profile/holidays/custom/{id}` | Yes           | Update a custom holiday's name or date                                       |
+| `DELETE` | `/profile/holidays/custom/{id}` | Yes           | Delete a custom holiday                                                      |
 
 ### System — `/api/v1/health`
 
-| Method | Endpoint | Auth Required | Description |
-|---|---|---|---|
-| `GET` | `/health` | No | API health check |
+| Method | Endpoint  | Auth Required | Description      |
+| ------ | --------- | ------------- | ---------------- |
+| `GET`  | `/health` | No            | API health check |
 
 ---
 
@@ -366,20 +373,20 @@ The pipeline runs as a **FastAPI `BackgroundTask`**, freeing the request thread 
 
 ### Model Dictionary
 
-| Model | Best For |
-|---|---|
-| `prophet` | Smooth and erratic demand with strong seasonality |
-| `croston_sba` | Intermittent and lumpy demand (sparse non-zero sales) |
-| `seasonal_naive` | Stable, highly seasonal patterns with limited data |
-| `naive` | Flat baselines and all-zero series |
+| Model            | Best For                                              |
+| ---------------- | ----------------------------------------------------- |
+| `prophet`        | Smooth and erratic demand with strong seasonality     |
+| `croston_sba`    | Intermittent and lumpy demand (sparse non-zero sales) |
+| `seasonal_naive` | Stable, highly seasonal patterns with limited data    |
+| `naive`          | Flat baselines and all-zero series                    |
 
 ### MAPE Rating Thresholds
 
-| Rating | MAPE Range |
-|---|---|
-| ✅ Excellent | < 15% |
-| 🟡 Good | 15% – 30% |
-| 🔴 Poor | > 30% |
+| Rating       | MAPE Range |
+| ------------ | ---------- |
+| ✅ Excellent | < 15%      |
+| 🟡 Good      | 15% – 30%  |
+| 🔴 Poor      | > 30%      |
 
 ---
 
@@ -402,20 +409,20 @@ GEMINI_API_KEY=your_gemini_api_key_here
 
 ### Full Settings Reference
 
-| Variable | Default | Description |
-|---|---|---|
-| `DATABASE_URL` | *(required)* | PostgreSQL connection string |
-| `SECRET_KEY` | *(required)* | JWT signing secret |
-| `ALGORITHM` | `HS256` | JWT signing algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token TTL in minutes |
-| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token TTL in days |
-| `GEMINI_API_KEY` | `""` | Google Gemini API key |
-| `MAX_UPLOAD_SIZE_MB` | `10` | Maximum CSV upload size |
-| `MAX_UPLOAD_ROWS` | `50000` | Maximum rows per CSV upload |
-| `UPLOAD_SESSION_TTL_HOURS` | `24` | Time-to-live for pending CSV upload sessions |
-| `APP_NAME` | `Shelfwise Inventory Forecasting API` | Application name shown in docs |
-| `DEBUG` | `false` | Enable debug logging |
-| `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins |
+| Variable                      | Default                               | Description                                  |
+| ----------------------------- | ------------------------------------- | -------------------------------------------- |
+| `DATABASE_URL`                | _(required)_                          | PostgreSQL connection string                 |
+| `SECRET_KEY`                  | _(required)_                          | JWT signing secret                           |
+| `ALGORITHM`                   | `HS256`                               | JWT signing algorithm                        |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30`                                  | Access token TTL in minutes                  |
+| `REFRESH_TOKEN_EXPIRE_DAYS`   | `7`                                   | Refresh token TTL in days                    |
+| `GEMINI_API_KEY`              | `""`                                  | Google Gemini API key                        |
+| `MAX_UPLOAD_SIZE_MB`          | `10`                                  | Maximum CSV upload size                      |
+| `MAX_UPLOAD_ROWS`             | `50000`                               | Maximum rows per CSV upload                  |
+| `UPLOAD_SESSION_TTL_HOURS`    | `24`                                  | Time-to-live for pending CSV upload sessions |
+| `APP_NAME`                    | `Shelfwise Inventory Forecasting API` | Application name shown in docs               |
+| `DEBUG`                       | `false`                               | Enable debug logging                         |
+| `CORS_ORIGINS`                | `["http://localhost:3000"]`           | Allowed CORS origins                         |
 
 ---
 
@@ -503,6 +510,7 @@ alembic history
 ```
 
 Alembic configuration:
+
 - **`alembic.ini`** — main config file (at project root)
 - **`alembic/env.py`** — imports all models and reads `DATABASE_URL` from app settings
 - **`alembic/versions/`** — auto-generated migration scripts (commit these to version control)
@@ -518,6 +526,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 The server will be available at:
+
 - **API base:** `http://localhost:8000/api/v1`
 - **Swagger UI:** `http://localhost:8000/docs`
 - **ReDoc:** `http://localhost:8000/redoc`
@@ -535,12 +544,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 The API expects a CSV file with the following columns:
 
-| Column | Type | Required | Description |
-|---|---|---|---|
-| `date` | `YYYY-MM-DD` | ✅ | Sale date |
-| `product_id` | String | ✅ | SKU or product identifier |
-| `product_name` | String | ✅ | Human-readable product name |
-| `quantity_sold` | Integer / Float | ✅ | Units sold on that date |
+| Column          | Type            | Required | Description                 |
+| --------------- | --------------- | -------- | --------------------------- |
+| `date`          | `YYYY-MM-DD`    | ✅       | Sale date                   |
+| `product_id`    | String          | ✅       | SKU or product identifier   |
+| `product_name`  | String          | ✅       | Human-readable product name |
+| `quantity_sold` | Integer / Float | ✅       | Units sold on that date     |
 
 **Example:**
 
@@ -573,7 +582,7 @@ Most JSON endpoints return a standardized envelope using the string field **`sta
 ```json
 {
   "status": "success",
-  "data": { },
+  "data": {},
   "message": "Optional message"
 }
 ```
@@ -585,7 +594,7 @@ Most JSON endpoints return a standardized envelope using the string field **`sta
 ```json
 {
   "status": "success",
-  "data": [ ],
+  "data": [],
   "pagination": {
     "page": 1,
     "limit": 20,
@@ -631,18 +640,18 @@ Here `status` is **`healthy`** or **`degraded`**, not `success`.
 
 ### Common HTTP Status Codes
 
-| Code | Meaning |
-|---|---|
-| `200` | OK |
-| `201` | Created |
-| `400` | Validation error / bad request |
-| `401` | Unauthorized (missing or invalid token) |
-| `403` | Forbidden |
-| `404` | Resource not found |
-| `409` | Conflict (e.g., duplicate email) |
+| Code  | Meaning                                            |
+| ----- | -------------------------------------------------- |
+| `200` | OK                                                 |
+| `201` | Created                                            |
+| `400` | Validation error / bad request                     |
+| `401` | Unauthorized (missing or invalid token)            |
+| `403` | Forbidden                                          |
+| `404` | Resource not found                                 |
+| `409` | Conflict (e.g., duplicate email)                   |
 | `422` | Unprocessable entity (Pydantic validation failure) |
-| `429` | Rate limit exceeded |
-| `500` | Internal server error |
+| `429` | Rate limit exceeded                                |
+| `500` | Internal server error                              |
 
 ---
 
@@ -715,6 +724,7 @@ The script exercises register → upload → forecast → exports → share link
 ### Password Policy
 
 Passwords must meet all of the following:
+
 - At least **8 characters**
 - At least **1 uppercase** letter
 - At least **1 lowercase** letter

@@ -68,8 +68,6 @@ async def get_shared_forecast(
             "predictedValue": r.predicted_value,
             "lowerBound80": r.lower_bound_80,
             "upperBound80": r.upper_bound_80,
-            "lowerBound95": r.lower_bound_95,
-            "upperBound95": r.upper_bound_95,
         }
         if r.trend is not None:
             point["trend"] = r.trend
@@ -86,7 +84,6 @@ async def get_shared_forecast(
             "forecastDate": forecast.forecast_date.isoformat() if forecast.forecast_date else None,
             "forecastHorizon": forecast.forecast_horizon,
             "timeGranularity": forecast.time_granularity,
-            "confidenceLevel": forecast.confidence_level,
             "selectedModel": forecast.selected_model,
             "demandProfile": forecast.demand_profile,
             "seasonalityMode": forecast.seasonality_mode,

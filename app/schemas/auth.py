@@ -44,7 +44,6 @@ class UserResponse(CamelModel):
     email: str
     name: str
     default_forecast_period: int = 3
-    default_confidence_level: str = "95"
     holiday_calendar: str = "PH"
 
     model_config = {"from_attributes": True}

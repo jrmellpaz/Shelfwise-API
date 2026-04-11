@@ -181,7 +181,6 @@ All bodies use **camelCase** keys.
   "email": "user@example.com",
   "name": "Shelfwise Corp",
   "defaultForecastPeriod": 3,
-  "defaultConfidenceLevel": "95",
   "holidayCalendar": "PH"
 }
 ```
@@ -475,7 +474,6 @@ Toggles `isArchived`. No request body needed.
   "productId": "uuid (internal product UUID, NOT the SKU string)",
   "horizonDays": 90,
   "timeGranularity": "daily",       // "daily" | "weekly" | "monthly"
-  "confidenceLevel": "95",          // "80" | "95" | "both"
   "enableTuning": false,
   "tuneTrials": 30,
   "country": "PH"                   // optional, for holiday effects
@@ -497,11 +495,10 @@ Use capped exponential backoff: 1s → 2s → 4s → 8s → … cap at 10s. Max 
   "forecastDate": "2025-06-15T12:00:00+00:00",
   "forecastHorizon": 90,
   "timeGranularity": "daily",
-  "confidenceLevel": "95",
   "seasonalityMode": "additive",
-  "selectedModel": "prophet",
+  "selectedModel": "prophet",       // "prophet" | "xgboost" | "croston_sba" | "naive" | "seasonal_naive"
   "demandProfile": "smooth",
-  "status": "processing",       // "processing" | "generating_explanation" | "completed" | "failed"
+  "status": "processing",       // "processing" | "generating_explanation" | "completed" | "failed" | "cancelled"
   "progressStep": 2,            // current step (nullable)
   "progressTotal": 5,           // total steps (nullable)
   "progressLabel": "Training model...",  // human-readable label (nullable)
@@ -531,6 +528,7 @@ The forecast pipeline commits results to the database **before** calling the AI 
 | `"generating_explanation"` | ✅ Metrics, results, components | **Navigate to the report view.** Show all charts/metrics. Show a skeleton/shimmer for the AI explanation section. |
 | `"completed"` | ✅ Everything + `aiExplanation` | Replace the skeleton with the AI explanation content. **Stop polling.** |
 | `"failed"` | Error info | Display `errorMessage`. Stop polling. |
+| `"cancelled"` | Nothing | Display cancellation notice. Stop polling. |
 
 ```ts
 // Determine when the forecast data is ready to display
@@ -548,6 +546,44 @@ const isExplanationLoading = !forecast.aiExplanation;
 - Show `progressLabel` as descriptive text beneath the bar.
 - When `status === "generating_explanation"` or `status === "completed"`, fetch results and navigate to the report view.
 - When `status === "failed"`, display `errorMessage`.
+- When `status === "cancelled"`, display a cancellation notice. Stop polling.
+
+### Cancel Forecast — `POST /api/v1/forecasts/{id}/cancel` 🔒
+
+Aborts an in-progress forecast. Only valid when `status` is `"processing"` or `"generating_explanation"`.
+
+```json
+// Response → data
+{ "id": "uuid", "status": "cancelled" }
+```
+
+The background pipeline checks for cancellation between major steps and aborts early. Any partial results stored before the cancel are cleaned up.
+
+| Error Condition | HTTP | Code |
+|---|---|---|
+| Forecast not found / wrong user | 404 | `NOT_FOUND` |
+| Status is not `processing` / `generating_explanation` | 422 | `VALIDATION_ERROR` |
+
+**Frontend usage**:
+
+```ts
+// Cancel mutation
+const cancelForecast = useMutation({
+  mutationFn: (forecastId: string) =>
+    apiFetch(`/api/v1/forecasts/${forecastId}/cancel`, { method: "POST" }),
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ["forecast"] });
+  },
+});
+
+// Show cancel button during processing
+{(status === "processing" || status === "generating_explanation") && (
+  <Button variant="destructive" onClick={() => cancelForecast.mutate(forecastId)}>
+    Cancel
+  </Button>
+)}
+```
+
 
 ### List Forecasts — `GET /api/v1/forecasts/` 🔒
 
@@ -577,8 +613,6 @@ Query params: `page`, `limit`, `productId` (optional UUID filter).
     "predictedValue": 42.5,
     "lowerBound80": 35.0,
     "upperBound80": 50.0,
-    "lowerBound95": 28.0,
-    "upperBound95": 57.0,
     "trend": 40.1,
     "weeklySeasonality": 2.3,
     "yearlySeasonality": 0.1
@@ -586,7 +620,7 @@ Query params: `page`, `limit`, `productId` (optional UUID filter).
 ]
 ```
 
-Use this data for charts. `lowerBound80`/`upperBound80` and `lowerBound95`/`upperBound95` render as confidence interval bands.
+Use `lowerBound80` / `upperBound80` to render the confidence band on your chart. The backend uses an **80% confidence interval** — tighter and more actionable for inventory planning than the typical 95% CI.
 
 ### Forecast Components — `GET /api/v1/forecasts/{id}/components` 🔒
 
@@ -598,6 +632,35 @@ Use this data for charts. `lowerBound80`/`upperBound80` and `lowerBound95`/`uppe
   "yearly": [{ "month": "January", "effect": -1.2 }, ...]
 }
 ```
+
+> [!IMPORTANT]
+> **XGBoost model — conditional component charts**: When `selectedModel === "xgboost"`, the components endpoint returns **empty arrays** for `trend`, `weekly`, and `yearly`. XGBoost does not decompose forecasts into seasonal components like Prophet does. The frontend should conditionally render or hide the component decomposition charts:
+>
+> ```ts
+> const isDecomposable = forecast.selectedModel === "prophet";
+>
+> // Only render trend/weekly/yearly charts when the model supports decomposition
+> {isDecomposable && (
+>   <>
+>     <TrendChart data={components.trend} />
+>     <WeeklyChart data={components.weekly} />
+>     <YearlyChart data={components.yearly} />
+>   </>
+> )}
+> ```
+>
+> The forecast results (`predictedValue`, `lowerBound*`, `upperBound*`) and accuracy metrics (`mape`, `wape`, etc.) are always available regardless of which model was selected. Only the component breakdown is model-specific.
+
+### Model Selection Behavior
+
+The backend automatically selects the best-performing model via cross-validated backtesting. The `selectedModel` field in the response tells you which model won:
+
+| `selectedModel` | When It's Selected | Component Charts | Notes |
+|---|---|---|---|
+| `"prophet"` | Smooth/erratic demand with meaningful seasonality | ✅ Trend, weekly, yearly | Most common for seasonal retail data |
+| `"xgboost"` | Non-seasonal or weak-seasonality data | ❌ Empty components | Uses lag features + calendar indicators instead of decomposition |
+| `"croston_sba"` | Intermittent/lumpy demand (many zero-sale periods) | ❌ Empty components | Sparse demand specialist |
+| `"naive"` / `"seasonal_naive"` | Fallback/baseline models | ❌ Empty components | Simple benchmarks |
 
 ### Exports
 
@@ -704,7 +767,6 @@ Returns a rich read-only payload:
     "forecastDate": "...",
     "forecastHorizon": 90,
     "timeGranularity": "daily",
-    "confidenceLevel": "95",
     "selectedModel": "prophet",
     "demandProfile": "smooth",
     "seasonalityMode": "additive",
@@ -842,9 +904,17 @@ Use a Markdown renderer (e.g. `react-markdown` or `marked`) to display replies. 
   "mobileNumber": "+639171234567",
   "businessLogo": "base64 or URL string",
   "defaultForecastPeriod": 3,         // months (1–12)
-  "defaultConfidenceLevel": "95",     // "80" | "95" | "both"
   "holidayCalendar": "PH",
   "hasGeminiKey": false,              // true if the user has a custom Gemini API key
+  "location": {                       // weather location (see Location section below)
+    "latitude": 14.5995,
+    "longitude": 120.9842,
+    "city": "Manila",
+    "countryName": "Philippines",
+    "countryCode": "PH",
+    "isDefault": true,
+    "weatherEnabled": true
+  },
   "createdAt": "2025-01-01T00:00:00+00:00"
 }
 ```
@@ -857,7 +927,7 @@ Partial update. Accepts camelCase keys:
 { "name": "New Name", "defaultForecastPeriod": 6 }
 ```
 
-Allowed fields: `name`, `contactEmail`, `mobileNumber`, `businessLogo`, `defaultForecastPeriod`, `defaultConfidenceLevel`, `holidayCalendar`.
+Allowed fields: `name`, `contactEmail`, `mobileNumber`, `businessLogo`, `defaultForecastPeriod`, `holidayCalendar`.
 
 ### Change Password — `PUT /api/v1/profile/password` 🔒
 
@@ -1161,7 +1231,229 @@ export const geminiKeyQuery = () =>
 
 ---
 
+### Location — `GET /api/v1/profile/location` 🔒
+
+Get the user's weather location. Falls back to the capital city of their `holidayCalendar` country if no custom location is set.
+
+```json
+// Response → data
+{
+  "latitude": 14.5995,
+  "longitude": 120.9842,
+  "city": "Manila",
+  "countryName": "Philippines",
+  "countryCode": "PH",
+  "isDefault": true,
+  "weatherEnabled": true
+}
+```
+
+`isDefault` is `true` when the location is auto-derived from the holiday calendar country (user hasn't set a custom location).
+`weatherEnabled` controls whether weather data (temperature, precipitation) is used as forecast regressors.
+
+### Set Location — `PUT /api/v1/profile/location` 🔒
+
+Set or update the user's weather location. Use the data returned by the search endpoint.
+
+```json
+// Request
+{
+  "latitude": 10.3157,
+  "longitude": 123.8854,
+  "city": "Cebu City",
+  "countryName": "Philippines",
+  "weatherEnabled": true        // optional — toggle weather regressors
+}
+
+// Response → data (same shape as GET)
+{
+  "latitude": 10.3157,
+  "longitude": 123.8854,
+  "city": "Cebu City",
+  "countryName": "Philippines",
+  "countryCode": "PH",
+  "isDefault": false,
+  "weatherEnabled": true
+}
+```
+
+**Validation:**
+- `latitude`: required, -90 to 90
+- `longitude`: required, -180 to 180
+- `city`: optional string
+- `countryName`: optional string
+- `weatherEnabled`: optional boolean (only updated if provided, defaults to `true` for new users)
+
+### Reset Location — `DELETE /api/v1/profile/location` 🔒
+
+Resets to the capital city of the user's holiday calendar country. Returns the new default location in the response.
+
+```json
+// Response → data
+{
+  "latitude": 14.5995,
+  "longitude": 120.9842,
+  "city": "Manila",
+  "countryName": "Philippines",
+  "countryCode": "PH",
+  "isDefault": true,
+  "weatherEnabled": true
+}
+```
+
+### Search Cities — `GET /api/v1/profile/location/search` 🔒
+
+Proxies the Open-Meteo Geocoding API for city autocomplete. Use this for the frontend search input.
+
+Query params:
+- `query` — required, min 2 characters
+- `count` — optional, max results (default 5, max 10)
+
+```json
+// GET /api/v1/profile/location/search?query=cebu&count=5
+// Response → data
+{
+  "results": [
+    {
+      "city": "Cebu",
+      "region": "Central Visayas",
+      "countryName": "Philippines",
+      "countryCode": "PH",
+      "latitude": 10.33333,
+      "longitude": 123.75,
+      "population": 4164535
+    }
+  ]
+}
+```
+
+> [!NOTE]
+> When the user changes their holiday calendar country (`PUT /profile/holidays`) and has no custom location set, the default location automatically updates to the new country's capital. The holidays response now includes a `location` field reflecting this.
+
+### Weather Data — `GET /api/v1/profile/weather` 🔒
+
+Fetch recent weather data for the user's location (from the Open-Meteo Archive API).
+
+Query params: `days` (default 7, max 90)
+
+```json
+// GET /api/v1/profile/weather?days=7
+// Response → data
+{
+  "location": {
+    "latitude": 14.5995,
+    "longitude": 120.9842,
+    "city": "Manila"
+  },
+  "daily": [
+    {
+      "date": "2026-04-03",
+      "temperatureMean": 28.5,
+      "precipitationSum": 2.1
+    }
+  ]
+}
+```
+
+If weather data is temporarily unavailable, `daily` returns an empty array and an `error` string is included.
+
+> [!TIP]
+> Weather data is automatically used as forecast regressors (temperature and precipitation). No extra action is needed when creating forecasts — the backend fetches weather for the user's location and includes it in the Prophet model.
+
+### TypeScript Types for Location & Weather
+
+```ts
+// src/lib/api-types.ts (add to existing types)
+
+interface UserLocation {
+  latitude: number;
+  longitude: number;
+  city: string | null;
+  countryName: string | null;
+  countryCode: string;
+  isDefault: boolean;
+  weatherEnabled: boolean;
+}
+
+interface SetLocationRequest {
+  latitude: number;
+  longitude: number;
+  city?: string;
+  countryName?: string;
+  weatherEnabled?: boolean;
+}
+
+interface CitySearchResult {
+  city: string;
+  region: string | null;
+  countryName: string;
+  countryCode: string;
+  latitude: number;
+  longitude: number;
+  population: number | null;
+}
+
+interface CitySearchResponse {
+  results: CitySearchResult[];
+}
+
+interface WeatherDay {
+  date: string;         // "YYYY-MM-DD"
+  temperatureMean: number | null;
+  precipitationSum: number | null;
+}
+
+interface WeatherResponse {
+  location: {
+    latitude: number;
+    longitude: number;
+    city: string | null;
+  };
+  daily: WeatherDay[];
+  error?: string;       // present when weather API is unavailable
+}
+```
+
+### TanStack Query — Location & Weather
+
+```ts
+// src/lib/queries.ts (add these)
+
+export const locationQuery = () =>
+  queryOptions({
+    queryKey: ["profile", "location"],
+    queryFn: () => apiFetch("/api/v1/profile/location"),
+  });
+
+export const locationSearchQuery = (query: string) =>
+  queryOptions({
+    queryKey: ["location", "search", query],
+    queryFn: () => apiFetch(`/api/v1/profile/location/search?query=${encodeURIComponent(query)}`),
+    enabled: query.length >= 2,
+  });
+
+export const weatherQuery = (days = 7) =>
+  queryOptions({
+    queryKey: ["profile", "weather", days],
+    queryFn: () => apiFetch(`/api/v1/profile/weather?days=${days}`),
+    staleTime: 1000 * 60 * 30,  // weather data is stale after 30 min
+  });
+```
+
+### Location UX Notes
+
+- **Default behavior**: Every user gets a default location (capital of their holiday calendar country) without needing to set anything. The location card should show the default with a "(Default)" indicator.
+- **City search**: Use a debounced text input (300ms) that calls the search endpoint. Display results in a dropdown with city name, region, country, and population.
+- **Selecting a result**: When the user picks a city from the dropdown, call `PUT /profile/location` with the selected city's coordinates and name. This is a single click action.
+- **Reset button**: Show a "Reset to Default" button when `isDefault === false`. Calls `DELETE /profile/location`.
+- **Invalidate on change**: After setting, updating, or resetting location, invalidate `["profile", "location"]`, `["profile", "weather"]`, and `["profile"]`.
+- **Invalidate on country change**: When changing the holiday calendar country, also invalidate `["profile", "location"]` since the default location changes.
+- **Weather display**: Optionally show a small weather summary card on the settings page or dashboard (temperature, precipitation for recent days). This is informational — weather data is automatically factored into forecasts.
+
+---
+
 ## 11. Health Check
+
 
 ### `GET /api/v1/health` (public)
 

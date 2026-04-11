@@ -16,7 +16,6 @@ class ForecastRequest(CamelModel):
     product_id: UUID
     horizon_days: int = 90
     time_granularity: str = "daily"       # daily | weekly | monthly
-    confidence_level: str = "95"          # '80' | '95' | 'both'
     enable_tuning: bool = False
     tune_trials: int = 30
     country: Optional[str] = None         # e.g. 'PH', 'US'

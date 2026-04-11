@@ -48,7 +48,7 @@ class Forecast(Base):
     )
     forecast_horizon = Column(Integer, nullable=False)                  # days
     time_granularity = Column(String, nullable=True)                    # daily/weekly/monthly
-    confidence_level = Column(String, nullable=True)                    # '80', '95', 'both'
+    confidence_level = Column(String, nullable=True)                    # always '80' (hardcoded)
     seasonality_mode = Column(String, nullable=True)                    # additive/multiplicative
     selected_model = Column(String, nullable=True)                      # prophet, croston_sba, etc.
     demand_profile = Column(String, nullable=True)                      # smooth/erratic/intermittent/lumpy

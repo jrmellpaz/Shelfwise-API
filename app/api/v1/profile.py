@@ -11,11 +11,18 @@ GET   /holidays/custom   — List user's custom holidays
 POST  /holidays/custom   — Create a custom holiday
 PUT   /holidays/custom/{id} — Update a custom holiday
 DELETE /holidays/custom/{id} — Delete a custom holiday
+GET   /location           — Get user's weather location
+PUT   /location           — Set user's weather location
+DELETE /location          — Reset location to country capital default
+GET   /location/search    — Search cities (geocoding proxy)
+GET   /weather            — Get recent weather for user's location
 """
 
 import datetime
+import logging
 
 import holidays as holidays_lib
+import requests as http_requests
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -109,6 +116,100 @@ COUNTRY_NAMES: dict[str, str] = {
     "ZA": "South Africa",
 }
 
+# Capital city coordinates for each supported country code.
+# Used as default weather location when no custom location is set.
+COUNTRY_CAPITALS: dict[str, tuple[str, float, float]] = {
+    "AE": ("Abu Dhabi", 24.4539, 54.3773),
+    "AR": ("Buenos Aires", -34.6037, -58.3816),
+    "AT": ("Vienna", 48.2082, 16.3738),
+    "AU": ("Canberra", -35.2809, 149.1300),
+    "BD": ("Dhaka", 23.8103, 90.4125),
+    "BE": ("Brussels", 50.8503, 4.3517),
+    "BG": ("Sofia", 42.6977, 23.3219),
+    "BR": ("Brasília", -15.7975, -47.8919),
+    "CA": ("Ottawa", 45.4215, -75.6972),
+    "CH": ("Bern", 46.9480, 7.4474),
+    "CL": ("Santiago", -33.4489, -70.6693),
+    "CN": ("Beijing", 39.9042, 116.4074),
+    "CO": ("Bogotá", 4.7110, -74.0721),
+    "CZ": ("Prague", 50.0755, 14.4378),
+    "DE": ("Berlin", 52.5200, 13.4050),
+    "DK": ("Copenhagen", 55.6761, 12.5683),
+    "EE": ("Tallinn", 59.4370, 24.7536),
+    "EG": ("Cairo", 30.0444, 31.2357),
+    "ES": ("Madrid", 40.4168, -3.7038),
+    "FI": ("Helsinki", 60.1699, 24.9384),
+    "FR": ("Paris", 48.8566, 2.3522),
+    "GB": ("London", 51.5074, -0.1278),
+    "HK": ("Hong Kong", 22.3193, 114.1694),
+    "HR": ("Zagreb", 45.8150, 15.9819),
+    "HU": ("Budapest", 47.4979, 19.0402),
+    "ID": ("Jakarta", -6.2088, 106.8456),
+    "IE": ("Dublin", 53.3498, -6.2603),
+    "IL": ("Jerusalem", 31.7683, 35.2137),
+    "IN": ("New Delhi", 28.6139, 77.2090),
+    "IT": ("Rome", 41.9028, 12.4964),
+    "JP": ("Tokyo", 35.6762, 139.6503),
+    "KE": ("Nairobi", -1.2921, 36.8219),
+    "KR": ("Seoul", 37.5665, 126.9780),
+    "LT": ("Vilnius", 54.6872, 25.2797),
+    "LV": ("Riga", 56.9496, 24.1052),
+    "MX": ("Mexico City", 19.4326, -99.1332),
+    "MY": ("Kuala Lumpur", 3.1390, 101.6869),
+    "NG": ("Abuja", 9.0579, 7.4951),
+    "NL": ("Amsterdam", 52.3676, 4.9041),
+    "NO": ("Oslo", 59.9139, 10.7522),
+    "NZ": ("Wellington", -41.2865, 174.7762),
+    "PE": ("Lima", -12.0464, -77.0428),
+    "PH": ("Manila", 14.5995, 120.9842),
+    "PK": ("Islamabad", 33.6844, 73.0479),
+    "PL": ("Warsaw", 52.2297, 21.0122),
+    "PT": ("Lisbon", 38.7223, -9.1393),
+    "RO": ("Bucharest", 44.4268, 26.1025),
+    "RU": ("Moscow", 55.7558, 37.6173),
+    "SA": ("Riyadh", 24.7136, 46.6753),
+    "SE": ("Stockholm", 59.3293, 18.0686),
+    "SG": ("Singapore", 1.3521, 103.8198),
+    "SI": ("Ljubljana", 46.0569, 14.5058),
+    "SK": ("Bratislava", 48.1486, 17.1077),
+    "TH": ("Bangkok", 13.7563, 100.5018),
+    "TR": ("Ankara", 39.9334, 32.8597),
+    "TW": ("Taipei", 25.0330, 121.5654),
+    "UA": ("Kyiv", 50.4501, 30.5234),
+    "US": ("Washington, D.C.", 38.8951, -77.0364),
+    "VE": ("Caracas", 10.4806, -66.9036),
+    "VN": ("Hanoi", 21.0278, 105.8342),
+    "ZA": ("Pretoria", -25.7479, 28.2293),
+}
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_location(user: User) -> dict:
+    """Return the user's location, falling back to the capital of their holiday calendar country."""
+    country_code = user.holiday_calendar or "PH"
+    weather_on = user.weather_enabled if user.weather_enabled is not None else True
+    if user.location_latitude is not None and user.location_longitude is not None:
+        return {
+            "latitude": user.location_latitude,
+            "longitude": user.location_longitude,
+            "city": user.location_city,
+            "countryName": user.location_country_name or COUNTRY_NAMES.get(country_code),
+            "countryCode": country_code,
+            "isDefault": False,
+            "weatherEnabled": weather_on,
+        }
+    capital = COUNTRY_CAPITALS.get(country_code, COUNTRY_CAPITALS["PH"])
+    return {
+        "latitude": capital[1],
+        "longitude": capital[2],
+        "city": capital[0],
+        "countryName": COUNTRY_NAMES.get(country_code, country_code),
+        "countryCode": country_code,
+        "isDefault": True,
+        "weatherEnabled": weather_on,
+    }
+
 
 @router.get("/")
 async def get_profile(current_user: User = Depends(get_current_user)):
@@ -121,9 +222,9 @@ async def get_profile(current_user: User = Depends(get_current_user)):
         "mobileNumber": current_user.mobile_number,
         "businessLogo": current_user.business_logo,
         "defaultForecastPeriod": current_user.default_forecast_period,
-        "defaultConfidenceLevel": current_user.default_confidence_level,
         "holidayCalendar": current_user.holiday_calendar,
         "hasGeminiKey": bool(current_user.gemini_api_key),
+        "location": _resolve_location(current_user),
         "createdAt": current_user.created_at.isoformat() if current_user.created_at else None,
     })
 
@@ -141,7 +242,6 @@ async def update_profile(
         "mobile_number",
         "business_logo",
         "default_forecast_period",
-        "default_confidence_level",
         "holiday_calendar",
     }
 
@@ -152,7 +252,6 @@ async def update_profile(
         "mobileNumber": "mobile_number",
         "businessLogo": "business_logo",
         "defaultForecastPeriod": "default_forecast_period",
-        "defaultConfidenceLevel": "default_confidence_level",
         "holidayCalendar": "holiday_calendar",
     }
 
@@ -216,7 +315,11 @@ async def update_holidays(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Update the user's holiday calendar country code."""
+    """Update the user's holiday calendar country code.
+
+    If the user has no custom location set, automatically updates the
+    default location to the capital of the newly selected country.
+    """
     country = body.get("holidayCalendar") or body.get("holiday_calendar")
 
     if not country:
@@ -233,7 +336,10 @@ async def update_holidays(
     db.commit()
     db.refresh(current_user)
     return success_response(
-        data={"holidayCalendar": current_user.holiday_calendar},
+        data={
+            "holidayCalendar": current_user.holiday_calendar,
+            "location": _resolve_location(current_user),
+        },
         message="Holiday calendar updated",
     )
 
@@ -568,3 +674,195 @@ async def delete_gemini_key(
 
     return success_response(data=None, message="Gemini API key removed")
 
+
+# ── Location Management ───────────────────────────────────────
+
+
+@router.get("/location")
+async def get_location(current_user: User = Depends(get_current_user)):
+    """Get the user's weather location.
+
+    Returns the user's custom location if set, otherwise falls back
+    to the capital city of their holiday calendar country.
+    """
+    return success_response(data=_resolve_location(current_user))
+
+
+@router.put("/location")
+async def set_location(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Set or update the user's weather location.
+
+    Accepts latitude, longitude, and optional city/country name.
+    Used for fetching weather data as forecasting regressors.
+    """
+    latitude = body.get("latitude")
+    longitude = body.get("longitude")
+
+    if latitude is None or longitude is None:
+        raise ValidationException("latitude and longitude are required")
+
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except (ValueError, TypeError):
+        raise ValidationException("latitude and longitude must be numbers")
+
+    if not (-90 <= latitude <= 90):
+        raise ValidationException("latitude must be between -90 and 90")
+    if not (-180 <= longitude <= 180):
+        raise ValidationException("longitude must be between -180 and 180")
+
+    current_user.location_latitude = latitude
+    current_user.location_longitude = longitude
+    current_user.location_city = (body.get("city") or "").strip() or None
+    current_user.location_country_name = (
+        (body.get("countryName") or body.get("country_name") or "").strip() or None
+    )
+
+    # Weather toggle (optional — only update if explicitly provided)
+    weather_enabled = body.get("weatherEnabled")
+    if weather_enabled is not None:
+        current_user.weather_enabled = bool(weather_enabled)
+
+    db.commit()
+    db.refresh(current_user)
+    return success_response(
+        data=_resolve_location(current_user),
+        message="Location updated",
+    )
+
+
+@router.delete("/location")
+async def reset_location(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Reset the user's location to the default capital city."""
+    current_user.location_latitude = None
+    current_user.location_longitude = None
+    current_user.location_city = None
+    current_user.location_country_name = None
+    db.commit()
+    db.refresh(current_user)
+    return success_response(
+        data=_resolve_location(current_user),
+        message="Location reset to default",
+    )
+
+
+@router.get("/location/search")
+async def search_location(
+    query: str = Query(..., min_length=2, description="City name to search for"),
+    count: int = Query(default=5, ge=1, le=10, description="Max results"),
+    current_user: User = Depends(get_current_user),
+):
+    """Search for cities using the Open-Meteo Geocoding API.
+
+    Returns matching cities with coordinates, useful for the frontend
+    city-search autocomplete when setting a weather location.
+    """
+    try:
+        response = http_requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={
+                "name": query.strip(),
+                "count": count,
+                "language": "en",
+                "format": "json",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.warning("Geocoding search failed: %s", e)
+        return success_response(data={"results": []})
+
+    raw_results = data.get("results", [])
+    results = [
+        {
+            "city": r.get("name"),
+            "region": r.get("admin1"),
+            "countryName": r.get("country"),
+            "countryCode": r.get("country_code"),
+            "latitude": r.get("latitude"),
+            "longitude": r.get("longitude"),
+            "population": r.get("population"),
+        }
+        for r in raw_results
+    ]
+    return success_response(data={"results": results})
+
+
+# ── Weather ───────────────────────────────────────────────────
+
+
+@router.get("/weather")
+async def get_weather(
+    days: int = Query(default=7, ge=1, le=90, description="Number of historical days"),
+    current_user: User = Depends(get_current_user),
+):
+    """Fetch recent weather data for the user's location.
+
+    Uses the Open-Meteo Archive API to retrieve daily temperature
+    and precipitation data. The location is resolved from the user's
+    custom setting or their holiday calendar country's capital.
+    """
+    location = _resolve_location(current_user)
+    lat = location["latitude"]
+    lng = location["longitude"]
+
+    end_date = datetime.date.today() - datetime.timedelta(days=1)
+    start_date = end_date - datetime.timedelta(days=days - 1)
+
+    try:
+        response = http_requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude": lat,
+                "longitude": lng,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "daily": ["temperature_2m_mean", "precipitation_sum"],
+                "timezone": "auto",
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.warning("Weather fetch failed: %s", e)
+        return success_response(data={
+            "location": {
+                "latitude": lat,
+                "longitude": lng,
+                "city": location.get("city"),
+            },
+            "daily": [],
+            "error": "Weather data temporarily unavailable",
+        })
+
+    daily_data = []
+    times = data.get("daily", {}).get("time", [])
+    temps = data.get("daily", {}).get("temperature_2m_mean", [])
+    precips = data.get("daily", {}).get("precipitation_sum", [])
+
+    for i, date_str in enumerate(times):
+        daily_data.append({
+            "date": date_str,
+            "temperatureMean": temps[i] if i < len(temps) else None,
+            "precipitationSum": precips[i] if i < len(precips) else None,
+        })
+
+    return success_response(data={
+        "location": {
+            "latitude": lat,
+            "longitude": lng,
+            "city": location.get("city"),
+        },
+        "daily": daily_data,
+    })
