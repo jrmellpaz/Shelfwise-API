@@ -138,7 +138,7 @@ async def download_template():
     return StreamingResponse(
         buffer,
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=sales_template.csv"},
+        headers={"Content-Disposition": "attachment; filename=shelfwise_sales_template.csv"},
     )
 
 
