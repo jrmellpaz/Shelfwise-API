@@ -1,0 +1,9 @@
+Requirement already satisfied: google-auth in C:\Users\user\AppData\Local\Programs\Python\Python314\Lib\site-packages (2.49.0.dev0)
+Requirement already satisfied: pyasn1-modules>=0.2.1 in C:\Users\user\AppData\Local\Programs\Python\Python314\Lib\site-packages (from google-auth) (0.4.2)
+Requirement already satisfied: cryptography>=38.0.3 in C:\Users\user\AppData\Local\Programs\Python\Python314\Lib\site-packages (from google-auth) (46.0.3)
+Requirement already satisfied: cffi>=2.0.0 in C:\Users\user\AppData\Local\Programs\Python\Python314\Lib\site-packages (from cryptography>=38.0.3->google-auth) (2.0.0)
+Requirement already satisfied: pycparser in C:\Users\user\AppData\Local\Programs\Python\Python314\Lib\site-packages (from cffi>=2.0.0->cryptography>=38.0.3->google-auth) (2.23)
+Requirement already satisfied: pyasn1<0.7.0,>=0.6.1 in C:\Users\user\AppData\Local\Programs\Python\Python314\Lib\site-packages (from pyasn1-modules>=0.2.1->google-auth) (0.6.2)
+
+[notice] A new release of pip is available: 26.0.1 -> 26.1
+[notice] To update, run: python.exe -m pip install --upgrade pip

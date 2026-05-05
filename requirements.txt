@@ -11,6 +11,7 @@ alembic
 # Security & Authentication
 passlib[bcrypt]
 python-jose[cryptography]
+google-auth>=2.0.0
 
 # Settings & Middleware
 pydantic-settings

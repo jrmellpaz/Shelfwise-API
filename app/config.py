@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # ── Google OAuth ──────────────────────────────────────────
+    GOOGLE_CLIENT_ID: str = ""
+
     # ── Gemini API ────────────────────────────────────────────
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL_NAME: str = "gemini-3.1-flash-lite-preview"

@@ -37,12 +37,20 @@ class TokenResponse(CamelModel):
     token_type: str = "bearer"
 
 
+class GoogleAuthRequest(CamelModel):
+    """POST /api/v1/auth/google request body."""
+
+    id_token: str
+
+
 class UserResponse(CamelModel):
     """Public user info returned by GET /api/v1/auth/me."""
 
     id: UUID
     email: str
     name: str
+    auth_provider: str = "local"
+    avatar_url: str | None = None
     default_forecast_period: int = 3
     holiday_calendar: str = "PH"
 

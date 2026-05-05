@@ -16,8 +16,11 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String, unique=True, nullable=False, index=True)
-    password_hash = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)
     name = Column(String, nullable=False)
+    google_id = Column(String, unique=True, nullable=True, index=True)
+    auth_provider = Column(String, nullable=False, default="local", server_default="local")
+    avatar_url = Column(String, nullable=True)
     contact_email = Column(String, nullable=True)
     mobile_number = Column(String, nullable=True)
     business_logo = Column(Text, nullable=True)

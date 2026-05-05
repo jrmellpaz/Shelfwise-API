@@ -16,6 +16,7 @@ from app.core.exceptions import (
     InvalidCredentialsException,
     WeakPasswordException,
 )
+from app.core.google_auth import verify_google_id_token
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -27,6 +28,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.auth import (
+    GoogleAuthRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
@@ -85,8 +87,47 @@ async def register(body: RegisterRequest, db: Session = Depends(get_db)):
 async def login(body: LoginRequest, db: Session = Depends(get_db)):
     """Authenticate user and return token pair."""
     user = db.query(User).filter(User.email == body.email.lower().strip()).first()
-    if not user or not verify_password(body.password, user.password_hash):
+    if not user or not user.password_hash or not verify_password(body.password, user.password_hash):
         raise InvalidCredentialsException()
+
+    tokens = TokenResponse(
+        access_token=create_access_token(subject=str(user.id)),
+        refresh_token=create_refresh_token(subject=str(user.id)),
+    )
+    return success_response(data=tokens.model_dump(by_alias=True))
+
+
+@router.post("/google", response_model=ApiResponse[TokenResponse])
+async def google_auth(body: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """Authenticate with a Google ID token."""
+    payload = verify_google_id_token(body.id_token)
+    google_id = payload["sub"]
+    email = payload["email"].lower().strip()
+    name = payload.get("name", email.split("@")[0])
+    picture = payload.get("picture")
+
+    user = db.query(User).filter(User.google_id == google_id).first()
+
+    if not user:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            user.google_id = google_id
+            user.auth_provider = "both" if user.password_hash else "google"
+            if picture and not user.avatar_url:
+                user.avatar_url = picture
+        else:
+            user = User(
+                email=email,
+                name=name,
+                password_hash=None,
+                google_id=google_id,
+                auth_provider="google",
+                avatar_url=picture,
+            )
+            db.add(user)
+
+        db.commit()
+        db.refresh(user)
 
     tokens = TokenResponse(
         access_token=create_access_token(subject=str(user.id)),
