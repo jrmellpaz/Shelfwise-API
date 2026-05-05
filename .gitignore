@@ -3,3 +3,4 @@
 __pycache__
 .env.example
 .pytest_cache
+references/*
