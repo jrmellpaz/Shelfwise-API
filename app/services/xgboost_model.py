@@ -14,6 +14,7 @@ Key public functions
 """
 
 import logging
+import math
 from datetime import timedelta
 
 import numpy as np
@@ -51,6 +52,17 @@ _CALENDAR_FEATURES = [
 ]
 _LAG_FEATURES = ["lag_7", "lag_14", "lag_28"]
 _ROLLING_FEATURES = ["rolling_mean_7", "rolling_std_7", "rolling_mean_28"]
+
+
+def _get_safe_value(lst: list, backward_offset: int, fallback_val: float = 0.0) -> float:
+    try:
+        if len(lst) >= abs(backward_offset):
+            return float(lst[backward_offset])
+        elif len(lst) > 0:
+            return float(lst[-1])
+        return fallback_val
+    except Exception:
+        return fallback_val
 
 
 # ── Feature Engineering ───────────────────────────────────────
@@ -337,43 +349,23 @@ def train_xgb_model(
     country: str | None = None,
     custom_holidays_df: pd.DataFrame | None = None,
     xgb_params: dict | None = None,
+    aggregation: str = "daily",
 ) -> tuple[dict, pd.DataFrame]:
-    """Train XGBoost on full data and produce a multi-step forecast.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Pre-processed Prophet-style DataFrame.
-    horizon_days : int
-        Number of days to forecast.
-    country, custom_holidays_df :
-        Passed through to ``build_xgb_features``.
-    xgb_params : dict, optional
-        Overrides for XGBRegressor hyper-parameters (e.g. from Optuna).
-
-    Returns
-    -------
-    (model_info, forecast_df)
-        * *model_info* — dict with model metadata.
-        * *forecast_df* — DataFrame with ``ds, yhat, yhat_lower, yhat_upper``
-          spanning both historical fitted and future predicted rows.
-    """
+    """Train XGBoost on full data and produce an aligned recursive multi-step forecast."""
     from xgboost import XGBRegressor
 
     params = {**DEFAULT_XGB_PARAMS, **(xgb_params or {})}
 
-    # Build features on the full historical data
     feat_df = build_xgb_features(df, country=country, custom_holidays_df=custom_holidays_df)
     feature_cols = _get_feature_columns(feat_df)
 
-    # Drop rows where lag features are NaN (first ~28 rows)
     train = feat_df.dropna(subset=_LAG_FEATURES).copy()
-    if len(train) < 10:
+    if len(train) < 5:
         from app.core.exceptions import ForecastFailedException
 
         raise ForecastFailedException(
             f"Not enough data for XGBoost after lag feature creation "
-            f"({len(train)} rows, need ≥10)"
+            f"({len(train)} rows, need ≥5)"
         )
 
     X_train = train[feature_cols].fillna(0)
@@ -382,93 +374,81 @@ def train_xgb_model(
     logger.info("Training XGBoost model (%d rows, %d features)...", len(X_train), len(feature_cols))
     model = XGBRegressor(**params)
     model.fit(X_train, y_train, verbose=False)
-    logger.info("XGBoost model trained successfully")
 
-    # Residual-based confidence bands
     train_preds = model.predict(X_train)
     residuals = y_train.values - train_preds
     residual_std = float(np.std(residuals)) if len(residuals) > 1 else 0.0
 
-    # ── Build historical fitted values ────────────────────────
     historical_yhat = np.full(len(df), np.nan)
-    # Map predictions back to the original df indices
     train_indices = train.index
     fitted = model.predict(X_train)
     for i, idx in enumerate(train_indices):
         pos = df.index.get_loc(idx)
         historical_yhat[pos] = fitted[i]
 
-    # ── Recursive multi-step future forecast ──────────────────
+    freq_map = {"daily": "D", "weekly": "W", "monthly": "MS"}
+    freq_str = freq_map.get(aggregation, "D")
+    periods = int(math.ceil(horizon_days / 7.0)) if aggregation == "weekly" else (
+              int(math.ceil(horizon_days / 30.44)) if aggregation == "monthly" else horizon_days)
+
     last_date = df["ds"].max()
     future_dates = pd.date_range(
-        start=last_date + pd.Timedelta(days=1),
-        periods=horizon_days,
-        freq="D",
-    )
+        start=last_date,
+        periods=periods + 1,
+        freq=freq_str,
+    )[1:]
 
-    # Seed the rolling window with the last known values
-    recent_values = list(df["y"].values[-28:])  # Keep a buffer of recent y values
+    recent_values = list(df["y"].values)
 
-    # Pre-compute holiday set for future years
     future_years = sorted(set(d.year for d in future_dates))
     all_years = sorted(set(df["ds"].dt.year.unique().tolist()) | set(future_years))
     holiday_set = _build_holiday_set(country, custom_holidays_df, all_years)
 
-    # Check if weather columns exist in the features
     has_weather = "temperature" in feat_df.columns and "precipitation" in feat_df.columns
-
     future_preds: list[float] = []
 
     for date in future_dates:
         row_features: dict = {}
 
-        # Calendar features
         row_features["day_of_week"] = date.dayofweek
         row_features["day_of_month"] = date.day
         row_features["month"] = date.month
-        row_features["week_of_year"] = date.isocalendar()[1]
+        row_features["week_of_year"] = int(date.isocalendar()[1])
         row_features["is_weekend"] = int(date.dayofweek >= 5)
         row_features["is_holiday"] = int(date.date() in holiday_set)
 
-        # Lag features from the rolling buffer
-        row_features["lag_7"] = recent_values[-7] if len(recent_values) >= 7 else 0.0
-        row_features["lag_14"] = recent_values[-14] if len(recent_values) >= 14 else 0.0
-        row_features["lag_28"] = recent_values[-28] if len(recent_values) >= 28 else 0.0
+        row_features["lag_7"] = _get_safe_value(recent_values, -7)
+        row_features["lag_14"] = _get_safe_value(recent_values, -14)
+        row_features["lag_28"] = _get_safe_value(recent_values, -28)
 
-        # Rolling statistics from the rolling buffer
         last_7 = recent_values[-7:] if len(recent_values) >= 7 else recent_values
         last_28 = recent_values[-28:] if len(recent_values) >= 28 else recent_values
-        row_features["rolling_mean_7"] = float(np.mean(last_7))
-        row_features["rolling_std_7"] = float(np.std(last_7)) if len(last_7) > 1 else 0.0
-        row_features["rolling_mean_28"] = float(np.mean(last_28))
 
-        # Weather features — use forward-filled values if available
+        row_features["rolling_mean_7"] = float(np.mean(last_7)) if last_7 else 0.0
+        row_features["rolling_std_7"] = float(np.std(last_7)) if len(last_7) > 1 else 0.0
+        row_features["rolling_mean_28"] = float(np.mean(last_28)) if last_28 else 0.0
+
         if has_weather:
             weather_row = feat_df[feat_df["ds"] == date]
             if not weather_row.empty:
                 row_features["temperature"] = float(weather_row["temperature"].iloc[0])
                 row_features["precipitation"] = float(weather_row["precipitation"].iloc[0])
             else:
-                # Fall back to the last known weather values
-                row_features["temperature"] = float(feat_df["temperature"].iloc[-1])
-                row_features["precipitation"] = float(feat_df["precipitation"].iloc[-1])
+                row_features["temperature"] = float(feat_df["temperature"].iloc[-1]) if len(feat_df) > 0 else 0.0
+                row_features["precipitation"] = float(feat_df["precipitation"].iloc[-1]) if len(feat_df) > 0 else 0.0
 
-        # Predict
         X_row = pd.DataFrame([row_features])[feature_cols].fillna(0)
         pred = float(model.predict(X_row)[0])
-        pred = max(0.0, pred)  # Non-negative
+        pred = max(0.0, pred)
 
         future_preds.append(pred)
-        recent_values.append(pred)  # Feed back for subsequent lags
+        recent_values.append(pred)
 
-    # ── Assemble output DataFrame ─────────────────────────────
-    # Historical portion (fitted values)
     hist_part = pd.DataFrame({
         "ds": df["ds"],
         "yhat": np.where(np.isnan(historical_yhat), 0.0, historical_yhat),
     })
 
-    # Future portion
     future_preds_arr = np.array(future_preds, dtype=float)
     future_part = pd.DataFrame({
         "ds": future_dates,
@@ -477,8 +457,6 @@ def train_xgb_model(
         "yhat_upper": future_preds_arr + 1.28 * residual_std,
     })
 
-    # For historical rows, set dummy bounds (not used by the frontend for
-    # display, but keeps the DataFrame schema consistent).
     hist_part["yhat_lower"] = np.maximum(0, hist_part["yhat"] - 1.28 * residual_std)
     hist_part["yhat_upper"] = hist_part["yhat"] + 1.28 * residual_std
 
@@ -493,7 +471,7 @@ def train_xgb_model(
         "training_rows": len(train),
     }
 
-    logger.info("Generated %d-day XGBoost forecast", horizon_days)
+    logger.info("Generated %d-period XGBoost forecast using frequency %s", periods, freq_str)
     return model_info, forecast_df
 
 

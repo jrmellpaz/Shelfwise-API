@@ -43,6 +43,22 @@ logger = logging.getLogger(__name__)
 FORECAST_PROGRESS_TOTAL = 5
 
 
+def _get_freq_str(aggregation: str) -> str:
+    if aggregation == "weekly":
+        return "W"
+    if aggregation == "monthly":
+        return "MS"
+    return "D"
+
+
+def _scale_horizon_to_periods(horizon_days: int, aggregation: str) -> int:
+    if aggregation == "weekly":
+        return int(math.ceil(horizon_days / 7.0))
+    if aggregation == "monthly":
+        return int(math.ceil(horizon_days / 30.44))
+    return horizon_days
+
+
 def build_custom_holidays_df(db: Session, user_id) -> pd.DataFrame | None:
     """Query user's custom holidays and return a Prophet-compatible DataFrame.
 
@@ -326,29 +342,49 @@ def determine_cv_config(
     initial_days: int | None = None,
     horizon_days: int | None = None,
     period_days: int | None = None,
+    aggregation: str = "daily",
 ) -> dict:
-    data_days = (df["ds"].max() - df["ds"].min()).days
+    n_rows = len(df)
 
-    default_initial = max(90, int(data_days * 0.6))
-    default_horizon = min(30, max(7, int(data_days * 0.2)))
-    default_period = default_horizon
-
-    if data_days < 180:
-        default_initial = max(60, int(data_days * 0.5))
-        default_horizon = min(14, max(7, int(data_days * 0.15)))
+    if aggregation == "daily":
+        data_days = (df["ds"].max() - df["ds"].min()).days
+        default_initial = max(90, int(data_days * 0.6))
+        default_horizon = min(30, max(7, int(data_days * 0.2)))
         default_period = default_horizon
 
+        if data_days < 180:
+            default_initial = max(60, int(data_days * 0.5))
+            default_horizon = min(14, max(7, int(data_days * 0.15)))
+            default_period = default_horizon
+
+        config = {
+            "initial_days": initial_days or default_initial,
+            "horizon_days": horizon_days or default_horizon,
+            "period_days": period_days or default_period,
+        }
+        if config["initial_days"] + config["horizon_days"] >= data_days:
+            config["initial_days"] = max(30, data_days - config["horizon_days"] - 1)
+        return config
+
+    default_initial_rows = max(6, int(n_rows * 0.6))
+    default_horizon_rows = max(2, min(6, int(n_rows * 0.2)))
+    default_period_rows = default_horizon_rows
+
     config = {
-        "initial_days": initial_days or default_initial,
-        "horizon_days": horizon_days or default_horizon,
-        "period_days": period_days or default_period,
+        "initial_rows": initial_days or default_initial_rows,
+        "horizon_rows": horizon_days or default_horizon_rows,
+        "period_rows": period_days or default_period_rows,
+        "_row_based": True,
     }
-    if config["initial_days"] + config["horizon_days"] >= data_days:
-        config["initial_days"] = max(30, data_days - config["horizon_days"] - 1)
+    if config["initial_rows"] + config["horizon_rows"] >= n_rows:
+        config["initial_rows"] = max(3, n_rows - config["horizon_rows"] - 1)
     return config
 
 
 def _generate_backtest_folds(df, cv_config):
+    if cv_config.get("_row_based"):
+        return _generate_backtest_folds_row_based(df, cv_config)
+
     start_date = df["ds"].min()
     end_date = df["ds"].max()
     cutoff = start_date + timedelta(days=cv_config["initial_days"])
@@ -360,6 +396,25 @@ def _generate_backtest_folds(df, cv_config):
     if not folds and cv_config["horizon_days"] < (end_date - start_date).days:
         cutoff = end_date - timedelta(days=cv_config["horizon_days"])
         folds.append((cutoff, end_date))
+    return folds
+
+
+def _generate_backtest_folds_row_based(df, cv_config):
+    sorted_dates = df["ds"].sort_values().reset_index(drop=True)
+    n = len(sorted_dates)
+    initial = cv_config["initial_rows"]
+    horizon = cv_config["horizon_rows"]
+    period = cv_config["period_rows"]
+    folds = []
+    idx = initial
+    while idx + horizon <= n:
+        cutoff = sorted_dates.iloc[idx - 1]
+        horizon_end = sorted_dates.iloc[min(idx + horizon - 1, n - 1)]
+        folds.append((cutoff, horizon_end))
+        idx += period
+    if not folds and n > 2:
+        cutoff = sorted_dates.iloc[max(0, n - horizon - 1)]
+        folds.append((cutoff, sorted_dates.iloc[-1]))
     return folds
 
 
@@ -497,17 +552,15 @@ def _backtest_single_model(
     if not folds:
         raise ForecastFailedException("Unable to generate backtest folds")
 
+    freq_str = _get_freq_str(aggregation)
+
     for cutoff, horizon_end in folds:
         train_df = df[df["ds"] <= cutoff].copy()
         test_df = df[(df["ds"] > cutoff) & (df["ds"] <= horizon_end)].copy()
         if test_df.empty:
             continue
 
-        if model_name == "xgboost":
-            # XGBoost backtesting is handled by its own module; skip
-            # the per-fold loop here and delegate entirely.
-            pass
-        elif model_name == "prophet":
+        if model_name == "prophet":
             avg_sales = train_df["y"].mean()
             std_sales = train_df["y"].std()
             cv_val = std_sales / avg_sales if avg_sales > 0 else 0
@@ -533,18 +586,23 @@ def _backtest_single_model(
                 seasonality_mode=s_mode,
                 interval_width=0.80,
                 daily_seasonality=False,
-                weekly_seasonality=True,
+                weekly_seasonality=(aggregation == "daily"),
                 yearly_seasonality=True,
                 holidays=custom_holidays_df,
             )
-            model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
+
+            if aggregation == "daily":
+                model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
+            elif aggregation == "weekly":
+                model.add_seasonality(name="monthly", period=4.34, fourier_order=mfo)
+
             for col in regressor_columns:
                 model.add_regressor(col)
             if country:
                 model.add_country_holidays(country_name=country)
 
             model.fit(train_df)
-            future = model.make_future_dataframe(periods=len(test_df), freq="D")
+            future = model.make_future_dataframe(periods=len(test_df), freq=freq_str)
             if regressor_columns:
                 known = pd.concat(
                     [
@@ -742,8 +800,9 @@ def train_prophet_model(
     country: str | None = None,
     tuned_params: dict | None = None,
     custom_holidays_df: pd.DataFrame | None = None,
+    aggregation: str = "daily",
 ) -> tuple:
-    """Configure, train Prophet, and generate forecast."""
+    """Configure, train Prophet, and generate forecast with correct temporal alignment."""
     from prophet import Prophet
 
     avg_sales = df["y"].mean()
@@ -761,32 +820,38 @@ def train_prophet_model(
 
     regressor_columns = [c for c in df.columns if c not in {"ds", "y"}]
 
+    is_daily = aggregation == "daily"
+    is_weekly = aggregation == "weekly"
+
     model = Prophet(
         changepoint_prior_scale=cps,
         seasonality_prior_scale=sps,
         seasonality_mode=s_mode,
         interval_width=0.80,
         daily_seasonality=False,
-        weekly_seasonality=True,
+        weekly_seasonality=is_daily,
         yearly_seasonality=True,
         holidays=custom_holidays_df,
     )
-    model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
+
+    if is_daily:
+        model.add_seasonality(name="monthly", period=30.5, fourier_order=mfo)
+    elif is_weekly:
+        model.add_seasonality(name="monthly", period=4.34, fourier_order=mfo)
+
     for col in regressor_columns:
         model.add_regressor(col)
     if country:
         model.add_country_holidays(country_name=country)
 
-    logger.info("Training Prophet model...")
+    logger.info("Training Prophet model on %s aggregation...", aggregation)
     model.fit(df)
-    logger.info("Model trained successfully")
 
-    future = model.make_future_dataframe(periods=horizon_days)
-    # Fill regressors for future period by merging known values from
-    # the training data.  ``make_future_dataframe`` only creates the
-    # ``ds`` column, so regressors must be joined back in.  Historical
-    # rows receive their real values; future rows are forward-filled
-    # from the last known observation.
+    periods = _scale_horizon_to_periods(horizon_days, aggregation)
+    freq_str = _get_freq_str(aggregation)
+
+    future = model.make_future_dataframe(periods=periods, freq=freq_str)
+
     if regressor_columns:
         known = df[["ds", *regressor_columns]].drop_duplicates(
             subset=["ds"], keep="last"
@@ -798,27 +863,30 @@ def train_prophet_model(
 
     forecast = model.predict(future)
 
-    # Clamp predictions to non-negative (sales can't be negative)
     forecast["yhat"] = forecast["yhat"].clip(lower=0)
     forecast["yhat_lower"] = forecast["yhat_lower"].clip(lower=0)
     forecast["yhat_upper"] = forecast["yhat_upper"].clip(lower=0)
 
-    logger.info("Generated %d-day forecast", horizon_days)
+    logger.info("Generated %d-period forecast using frequency %s", periods, freq_str)
     return model, forecast
 
 
 def build_baseline_forecast_frame(
     df: pd.DataFrame, model_name: str, horizon_days: int, aggregation: str
 ) -> tuple[dict, pd.DataFrame]:
-    """Train a baseline model and produce future rows."""
+    """Train a baseline model and produce future rows matching target frequency."""
+    freq_str = _get_freq_str(aggregation)
+    periods = _scale_horizon_to_periods(horizon_days, aggregation)
+
     future_dates = pd.date_range(
-        start=df["ds"].max() + pd.Timedelta(days=1),
-        periods=horizon_days,
-        freq="D",
-    )
+        start=df["ds"].max(),
+        periods=periods + 1,
+        freq=freq_str,
+    )[1:]
+
     season_length = _infer_season_length(aggregation)
     preds = _build_baseline_forecast(
-        model_name, df["y"].to_numpy(dtype=float), horizon_days, season_length
+        model_name, df["y"].to_numpy(dtype=float), periods, season_length
     )
     residual_scale = float(df["y"].std()) if len(df) > 1 else 0.0
     forecast = pd.DataFrame(
@@ -1166,7 +1234,7 @@ def run_forecast(
 
         candidates = resolve_candidate_models(None, demand_profile)
         sel_metric = resolve_selection_metric(None, demand_profile)
-        cv_config = determine_cv_config(processed)
+        cv_config = determine_cv_config(processed, aggregation=aggregation)
 
         if enable_tuning and "prophet" in candidates:
             _check_cancelled(db, forecast_record)
@@ -1233,6 +1301,7 @@ def run_forecast(
                 country=country,
                 tuned_params=tuned_params,
                 custom_holidays_df=custom_holidays_df,
+                aggregation=aggregation,
             )
         elif selected_model == "xgboost":
             from app.services.xgboost_model import train_xgb_model
@@ -1243,6 +1312,7 @@ def run_forecast(
                 country=country,
                 custom_holidays_df=custom_holidays_df,
                 xgb_params=xgb_tuned_params,
+                aggregation=aggregation,
             )
         else:
             model, forecast_df = build_baseline_forecast_frame(

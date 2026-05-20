@@ -44,6 +44,26 @@ def generate_csv_export(results) -> io.BytesIO:
     return output
 
 
+def _aggregate_historical(historical_data, granularity: str):
+    """Aggregate raw daily SalesData records to match forecast granularity."""
+    import pandas as pd
+
+    if not historical_data or granularity == "daily":
+        dates = [r.date for r in historical_data]
+        values = [float(r.quantity_sold) for r in historical_data]
+        return dates, values
+
+    df = pd.DataFrame({
+        "ds": pd.to_datetime([r.date for r in historical_data]),
+        "y": [float(r.quantity_sold) for r in historical_data],
+    })
+
+    freq = "W" if granularity == "weekly" else "MS"
+    df = df.set_index("ds").resample(freq).sum().reset_index()
+
+    return df["ds"].dt.date.tolist(), df["y"].tolist()
+
+
 def generate_chart_png(forecast, results, historical_data=None) -> io.BytesIO:
     """Render a forecast chart as a PNG image.
 
@@ -65,10 +85,10 @@ def generate_chart_png(forecast, results, historical_data=None) -> io.BytesIO:
 
     fig, ax = plt.subplots(figsize=(12, 5))
 
-    # Plot historical data if provided
+    # Plot historical data if provided, aggregated to match forecast granularity
     if historical_data:
-        hist_dates = [r.date for r in historical_data]
-        hist_values = [float(r.quantity_sold) for r in historical_data]
+        granularity = getattr(forecast, "time_granularity", "daily") or "daily"
+        hist_dates, hist_values = _aggregate_historical(historical_data, granularity)
         ax.plot(hist_dates, hist_values, color="#4A90D9", linewidth=1.2,
                 label="Historical", alpha=0.8)
 
