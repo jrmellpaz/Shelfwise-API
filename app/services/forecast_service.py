@@ -541,8 +541,6 @@ def _backtest_single_model(
             xgb_params=tuned_params,
         )
 
-    from prophet import Prophet
-
     season_length = _infer_season_length(aggregation)
     regressor_columns = [c for c in df.columns if c not in {"ds", "y"}]
     y_true_all: list[float] = []
@@ -561,6 +559,7 @@ def _backtest_single_model(
             continue
 
         if model_name == "prophet":
+            from prophet import Prophet
             avg_sales = train_df["y"].mean()
             std_sales = train_df["y"].std()
             cv_val = std_sales / avg_sales if avg_sales > 0 else 0
